@@ -3,8 +3,23 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://getrecommendedbyai.net"),
-  title: "GetRecommendedByAi",
-  description: "GEO citation gap scanner for AI recommendation readiness."
+  title: {
+    default: "GetRecommendedByAi",
+    template: "%s | GetRecommendedByAi"
+  },
+  description: "GEO citation gap scanner for AI recommendation readiness.",
+  icons: {
+    icon: "/logo.svg",
+    shortcut: "/logo.svg",
+    apple: "/logo.svg"
+  },
+  openGraph: {
+    title: "GetRecommendedByAi",
+    description: "Scan a URL, discover GEO citation gaps, and generate AI-ready optimization advice.",
+    url: "https://getrecommendedbyai.net",
+    siteName: "GetRecommendedByAi",
+    type: "website"
+  }
 };
 
 export default function RootLayout({
@@ -13,9 +28,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    <html lang="en">
       <body>{children}</body>
     </html>
   );
 }
-

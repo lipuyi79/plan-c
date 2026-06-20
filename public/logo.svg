@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GetRecommendedByAi logo">
+  <rect width="64" height="64" rx="14" fill="#16201c"/>
+  <path d="M17 42.5 28.3 14h7.4L47 42.5h-7.1l-2.1-5.9H26.2l-2.1 5.9H17Zm11.2-11.7h7.6L32 20.2l-3.8 10.6Z" fill="#ffffff"/>
+  <path d="M45.1 14.7 47.2 9l2.1 5.7 5.7 2.1-5.7 2.1-2.1 5.7-2.1-5.7-5.7-2.1 5.7-2.1Z" fill="#2dd4bf"/>
+  <path d="M13.8 48.8h36.4" stroke="#2dd4bf" stroke-width="4" stroke-linecap="round"/>
+</svg>

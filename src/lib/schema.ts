@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const AnalyzeRequestSchema = z.object({
-  url: z.string().trim().min(1, "请输入网址"),
-  language: z.string().trim().default("zh-CN")
+  url: z.string().trim().min(1, "Enter a website URL."),
+  language: z.string().trim().default("en-US")
 });
 
 export const GapSeveritySchema = z.enum(["critical", "high", "medium", "low"]);
@@ -93,4 +93,3 @@ export type AnalyzeApiResponse = {
   };
   analysis: GeoAnalysis;
 };
-

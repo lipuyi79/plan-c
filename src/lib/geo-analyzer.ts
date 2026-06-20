@@ -73,11 +73,11 @@ export async function analyzeSite(rawUrl: string, language: string): Promise<Ana
   const openaiApiKey = process.env.OPENAI_API_KEY;
 
   if (!firecrawlApiKey) {
-    throw new Error("缺少 FIRECRAWL_API_KEY，无法扫描网站。");
+    throw new Error("Missing FIRECRAWL_API_KEY. The website cannot be scanned.");
   }
 
   if (!openaiApiKey) {
-    throw new Error("缺少 OPENAI_API_KEY，无法生成 GEO 分析。");
+    throw new Error("Missing OPENAI_API_KEY. The GEO analysis cannot be generated.");
   }
 
   const maxPages = getPositiveInt(process.env.SCAN_MAX_PAGES, DEFAULT_SCAN_MAX_PAGES);
@@ -86,7 +86,7 @@ export async function analyzeSite(rawUrl: string, language: string): Promise<Ana
   const pageContexts = await scrapePages(selectedUrls, firecrawlApiKey);
 
   if (pageContexts.length === 0) {
-    throw new Error("Firecrawl 没有返回可分析的页面内容。");
+    throw new Error("Firecrawl did not return analyzable page content.");
   }
 
   const siteFiles = await checkSiteFiles(target.siteUrl);
@@ -112,7 +112,7 @@ function normalizeTarget(rawUrl: string): NormalizedTarget {
   const parsed = new URL(withProtocol);
 
   if (!["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error("只支持 http 或 https 网址。");
+    throw new Error("Only http and https URLs are supported.");
   }
 
   parsed.hash = "";
@@ -130,26 +130,26 @@ async function assertPublicTarget(target: NormalizedTarget) {
   const hostname = target.hostname.toLowerCase();
 
   if (hostname === "localhost" || hostname.endsWith(".local")) {
-    throw new Error("为了避免 SSRF 风险，暂不扫描本地域名。");
+    throw new Error("Local domains cannot be scanned because of SSRF protection.");
   }
 
   if (net.isIP(hostname) && isPrivateIp(hostname)) {
-    throw new Error("为了避免 SSRF 风险，暂不扫描内网 IP。");
+    throw new Error("Private network IPs cannot be scanned because of SSRF protection.");
   }
 
   try {
     const addresses = await Promise.race([
       dns.lookup(hostname, { all: true }),
       new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("DNS 查询超时")), 3000);
+        setTimeout(() => reject(new Error("DNS lookup timed out")), 3000);
       })
     ]);
 
     if (addresses.some((address) => isPrivateIp(address.address))) {
-      throw new Error("为了避免 SSRF 风险，暂不扫描解析到内网 IP 的域名。");
+      throw new Error("Domains resolving to private network IPs cannot be scanned because of SSRF protection.");
     }
   } catch (error) {
-    if (error instanceof Error && error.message.includes("内网")) {
+    if (error instanceof Error && error.message.includes("private network")) {
       throw error;
     }
   }
@@ -415,7 +415,7 @@ async function runOpenAiAnalysis({
   const parsed = response.output_parsed;
 
   if (!parsed) {
-    throw new Error("OpenAI 没有返回结构化分析结果。");
+    throw new Error("OpenAI did not return a structured analysis result.");
   }
 
   return parsed;
@@ -488,4 +488,3 @@ function getPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
-

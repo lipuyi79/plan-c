@@ -39,7 +39,7 @@ export async function POST(request: Request) {
       analysis: result.analysis
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "分析失败，请稍后再试。";
+    const message = error instanceof Error ? error.message : "Analysis failed. Please try again later.";
 
     return NextResponse.json(
       {
@@ -104,4 +104,3 @@ async function persistScan({
     persisted: true
   };
 }
-
