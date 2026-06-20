@@ -45,4 +45,3 @@ SCAN_MAX_PAGES=6
 3. Firecrawl scrapes selected pages as markdown.
 4. OpenAI returns a structured GEO report with citation gaps, recommendations, AI answer targets, and technical/content signals.
 5. Supabase stores the scan result when Supabase credentials are configured.
-
