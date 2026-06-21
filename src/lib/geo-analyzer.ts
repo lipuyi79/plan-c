@@ -70,14 +70,14 @@ export async function analyzeSite(rawUrl: string, language: string): Promise<Ana
   await assertPublicTarget(target);
 
   const firecrawlApiKey = process.env.FIRECRAWL_API_KEY;
-  const openaiApiKey = process.env.OPENAI_API_KEY;
+  const openaiApiKey = process.env.REPLICATE_API_TOKEN;
 
   if (!firecrawlApiKey) {
     throw new Error("Missing FIRECRAWL_API_KEY. The website cannot be scanned.");
   }
 
   if (!openaiApiKey) {
-    throw new Error("Missing OPENAI_API_KEY. The GEO analysis cannot be generated.");
+    throw new Error("Missing REPLICATE_API_TOKEN. The GEO analysis cannot be generated.");
   }
 
   const maxPages = getPositiveInt(process.env.SCAN_MAX_PAGES, DEFAULT_SCAN_MAX_PAGES);

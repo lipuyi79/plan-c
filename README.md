@@ -13,7 +13,7 @@ AI SEO / GEO SaaS MVP. The first version has no user center and no payments. It 
 ## Local setup
 
 1. Copy `.env.example` to `.env.local`.
-2. Fill in `FIRECRAWL_API_KEY`, `OPENAI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`.
+2. Fill in `FIRECRAWL_API_KEY`, `REPLICATE_API_TOKEN`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`.
 3. Run the Supabase SQL in `supabase/schema.sql`.
 4. Install and start:
 
@@ -28,7 +28,7 @@ Open `http://localhost:3000`.
 
 ```bash
 FIRECRAWL_API_KEY=
-OPENAI_API_KEY=
+REPLICATE_API_TOKEN=
 OPENAI_MODEL=gpt-5.5
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
