@@ -69,16 +69,8 @@ export async function analyzeSite(rawUrl: string, language: string): Promise<Ana
   const target = normalizeTarget(rawUrl);
   await assertPublicTarget(target);
 
-  const firecrawlApiKey = process.env.FIRECRAWL_API_KEY;
-  const openaiApiKey = process.env.REPLICATE_API_TOKEN;
-
-  if (!firecrawlApiKey) {
-    throw new Error("Missing FIRECRAWL_API_KEY. The website cannot be scanned.");
-  }
-
-  if (!openaiApiKey) {
-    throw new Error("Missing REPLICATE_API_TOKEN. The GEO analysis cannot be generated.");
-  }
+  const firecrawlApiKey = getSecretEnv("FIRECRAWL_API_KEY", "The website cannot be scanned.");
+  const openaiApiKey = getSecretEnv("OPENAI_API_KEY", "The GEO analysis cannot be generated.");
 
   const maxPages = getPositiveInt(process.env.SCAN_MAX_PAGES, DEFAULT_SCAN_MAX_PAGES);
   const candidateUrls = await discoverUrls(target, firecrawlApiKey);
@@ -487,4 +479,18 @@ function countWords(markdown: string) {
 function getPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function getSecretEnv(name: string, purpose: string) {
+  const value = process.env[name]?.trim();
+
+  if (!value) {
+    throw new Error(`Missing ${name}. ${purpose}`);
+  }
+
+  if (/^(export\s+|\$env:)/i.test(value)) {
+    throw new Error(`${name} must be the raw key value, not a shell assignment command.`);
+  }
+
+  return value;
 }
