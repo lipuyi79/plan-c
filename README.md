@@ -24,6 +24,22 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+## Deployment
+
+This app needs a running Next.js server because scans call the `/api/analyze` API route. GitHub can store the source code, but GitHub Pages is static hosting and cannot run this API route.
+
+Deploy the app to Vercel or another Next.js/Node hosting provider, then add these environment variables in the hosting dashboard:
+
+- `FIRECRAWL_API_KEY`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `FIRECRAWL_MAP_LIMIT`
+- `SCAN_MAX_PAGES`
+
+If the browser shows that the analysis API is not reachable, confirm that the deployed URL is not a static GitHub Pages site and that the environment variables are configured on the server.
+
 ## Environment variables
 
 ```bash

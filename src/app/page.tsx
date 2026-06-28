@@ -287,16 +287,20 @@ export default function Home() {
         })
       });
 
-      const payload = await response.json();
+      const payload = await readAnalyzePayload(response);
 
       if (!response.ok) {
-        throw new Error(payload.error ?? "Analysis failed.");
+        throw new Error("error" in payload ? payload.error : "Analysis failed.");
+      }
+
+      if ("error" in payload) {
+        throw new Error(payload.error);
       }
 
       setResult(payload as AnalyzeApiResponse);
       setActiveTab("gaps");
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Analysis failed.");
+      setError(getErrorMessage(caughtError));
     } finally {
       setIsLoading(false);
     }
@@ -441,6 +445,39 @@ export default function Home() {
 
 function LogoMark({ className = "" }: { className?: string }) {
   return <img className={`logo-mark ${className}`} src="/logo.svg" alt="GetRecommendedByAi logo" />;
+}
+
+async function readAnalyzePayload(response: Response): Promise<AnalyzeApiResponse | { error: string }> {
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    return {
+      error:
+        text.trim() ||
+        "The analysis API returned a non-JSON error. Make sure this app is deployed with the Next.js API route enabled."
+    };
+  }
+
+  return {
+    error: "The analysis API returned an unexpected response."
+  };
+}
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(error.message)) {
+    return [
+      "The analysis API is not reachable.",
+      "Deploy this app with a Next.js server/API route, such as Vercel, and configure the required API keys."
+    ].join(" ");
+  }
+
+  return error instanceof Error ? error.message : "Analysis failed.";
 }
 
 function BrandLockup() {
