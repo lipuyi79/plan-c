@@ -7,6 +7,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const DEFAULT_PERSIST_TIMEOUT_MS = 1500;
+
 export async function POST(request: Request) {
   const startedAt = Date.now();
 
@@ -15,7 +17,7 @@ export async function POST(request: Request) {
     const input = AnalyzeRequestSchema.parse(body);
     const result = await analyzeSite(input.url, input.language);
     const createdAt = new Date().toISOString();
-    const scanRecord = await persistScan({
+    const scanRecord = await persistScanWithTimeout({
       inputUrl: result.inputUrl,
       siteUrl: result.siteUrl,
       pageCount: result.pages.length,
@@ -52,6 +54,49 @@ export async function POST(request: Request) {
   }
 }
 
+type PersistScanInput = {
+  inputUrl: string;
+  siteUrl: string;
+  pageCount: number;
+  pages: unknown;
+  analysis: unknown;
+  elapsedMs: number;
+  createdAt: string;
+};
+
+type PersistScanResult = {
+  id: string | null;
+  persisted: boolean;
+};
+
+async function persistScanWithTimeout(input: PersistScanInput): Promise<PersistScanResult> {
+  const timeoutMs = getPositiveInt(process.env.SCAN_PERSIST_TIMEOUT_MS, DEFAULT_PERSIST_TIMEOUT_MS);
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      persistScan(input),
+      new Promise<PersistScanResult>((resolve) => {
+        timeoutId = setTimeout(() => {
+          resolve({
+            id: null,
+            persisted: false
+          });
+        }, timeoutMs);
+      })
+    ]);
+  } catch {
+    return {
+      id: null,
+      persisted: false
+    };
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 async function persistScan({
   inputUrl,
   siteUrl,
@@ -60,15 +105,7 @@ async function persistScan({
   analysis,
   elapsedMs,
   createdAt
-}: {
-  inputUrl: string;
-  siteUrl: string;
-  pageCount: number;
-  pages: unknown;
-  analysis: unknown;
-  elapsedMs: number;
-  createdAt: string;
-}) {
+}: PersistScanInput): Promise<PersistScanResult> {
   const supabase = getSupabaseAdmin();
 
   if (!supabase) {
@@ -103,4 +140,9 @@ async function persistScan({
     id: String(data.id),
     persisted: true
   };
+}
+
+function getPositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
