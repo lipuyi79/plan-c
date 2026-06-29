@@ -361,7 +361,10 @@ async function runOpenAiAnalysis({
   language: string;
   openaiApiKey: string;
 }) {
-  const openai = new OpenAI({ apiKey: openaiApiKey });
+  const openai = new OpenAI({
+    apiKey: openaiApiKey,
+    baseURL: getOptionalEnv("OPENAI_BASE_URL")
+  });
   const model = process.env.OPENAI_MODEL || "gpt-5.5";
   const context = buildPromptContext(target, pages, siteFiles);
 
@@ -493,4 +496,9 @@ function getSecretEnv(name: string, purpose: string) {
   }
 
   return value;
+}
+
+function getOptionalEnv(name: string) {
+  const value = process.env[name]?.trim();
+  return value || undefined;
 }

@@ -32,6 +32,7 @@ Deploy the app to Vercel or another Next.js/Node hosting provider, then add thes
 
 - `FIRECRAWL_API_KEY`
 - `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
@@ -45,6 +46,7 @@ If the browser shows that the analysis API is not reachable, confirm that the de
 ```bash
 FIRECRAWL_API_KEY=
 OPENAI_API_KEY=
+OPENAI_BASE_URL=https://sub2.de5.net/v1
 OPENAI_MODEL=gpt-5.5
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
