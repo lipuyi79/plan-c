@@ -5,8 +5,12 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { GeoAnalysisSchema, type GeoAnalysis, type ScannedPage } from "./schema";
 
 const FIRECRAWL_BASE_URL = "https://api.firecrawl.dev/v2";
-const DEFAULT_MAP_LIMIT = 20;
-const DEFAULT_SCAN_MAX_PAGES = 6;
+const DEFAULT_MAP_LIMIT = 12;
+const DEFAULT_SCAN_MAX_PAGES = 3;
+const DEFAULT_SCAN_READY_PAGES = 2;
+const DEFAULT_MAP_TIMEOUT_MS = 10000;
+const DEFAULT_SCRAPE_TIMEOUT_MS = 20000;
+const DEFAULT_SITE_FILE_TIMEOUT_MS = 2500;
 const PAGE_MARKDOWN_LIMIT = 6500;
 const PROMPT_CONTEXT_LIMIT = 42000;
 
@@ -73,15 +77,19 @@ export async function analyzeSite(rawUrl: string, language: string): Promise<Ana
   const openaiApiKey = getSecretEnv("OPENAI_API_KEY", "The GEO analysis cannot be generated.");
 
   const maxPages = getPositiveInt(process.env.SCAN_MAX_PAGES, DEFAULT_SCAN_MAX_PAGES);
+  const readyPageCount = Math.min(maxPages, getPositiveInt(process.env.SCAN_READY_PAGES, DEFAULT_SCAN_READY_PAGES));
+  const siteFilesPromise = checkSiteFiles(target.siteUrl);
   const candidateUrls = await discoverUrls(target, firecrawlApiKey);
   const selectedUrls = pickScanUrls(target.inputUrl, target.siteUrl, candidateUrls, maxPages);
-  const pageContexts = await scrapePages(selectedUrls, firecrawlApiKey);
+  const [pageContexts, siteFiles] = await Promise.all([
+    scrapePages(selectedUrls, firecrawlApiKey, readyPageCount),
+    siteFilesPromise
+  ]);
 
   if (pageContexts.length === 0) {
     throw new Error("Firecrawl did not return analyzable page content.");
   }
 
-  const siteFiles = await checkSiteFiles(target.siteUrl);
   const analysis = await runOpenAiAnalysis({
     target,
     pages: pageContexts,
@@ -174,6 +182,7 @@ function isPrivateIp(ip: string) {
 
 async function discoverUrls(target: NormalizedTarget, apiKey: string) {
   const limit = getPositiveInt(process.env.FIRECRAWL_MAP_LIMIT, DEFAULT_MAP_LIMIT);
+  const timeoutMs = getPositiveInt(process.env.FIRECRAWL_MAP_TIMEOUT_MS, DEFAULT_MAP_TIMEOUT_MS);
 
   try {
     const response = await firecrawlJson<FirecrawlMapResponse>(
@@ -184,9 +193,12 @@ async function discoverUrls(target: NormalizedTarget, apiKey: string) {
         includeSubdomains: false,
         ignoreQueryParameters: true,
         limit,
-        timeout: 30000
+        timeout: timeoutMs
       },
-      apiKey
+      apiKey,
+      {
+        timeoutMs
+      }
     );
 
     return (response.links ?? [])
@@ -257,16 +269,71 @@ function scoreUrl(url: string, origin: string) {
   return (matchedIndex === -1 ? 50 : matchedIndex + 2) + depth * 3;
 }
 
-async function scrapePages(urls: string[], apiKey: string) {
-  const results = await Promise.allSettled(urls.map((url) => scrapePage(url, apiKey)));
+async function scrapePages(urls: string[], apiKey: string, readyPageCount: number) {
+  if (urls.length === 0) {
+    return [];
+  }
 
-  return results
-    .filter((result): result is PromiseFulfilledResult<PageContext> => result.status === "fulfilled")
-    .map((result) => result.value)
-    .filter((page) => page.markdown.trim().length > 0);
+  const timeoutMs = getPositiveInt(process.env.FIRECRAWL_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS);
+  const targetSuccessCount = Math.min(Math.max(1, readyPageCount), urls.length);
+  const controllers = urls.map(() => new AbortController());
+  const pages = new Array<PageContext | null>(urls.length).fill(null);
+  const settled = new Array<boolean>(urls.length).fill(false);
+
+  return new Promise<PageContext[]>((resolve) => {
+    let settledCount = 0;
+    let resolved = false;
+
+    const getSuccessfulPages = () => pages.filter((page): page is PageContext => page !== null);
+    const resolveWithCurrentPages = (abortPending: boolean) => {
+      if (resolved) {
+        return;
+      }
+
+      resolved = true;
+
+      if (abortPending) {
+        controllers.forEach((controller, index) => {
+          if (!settled[index]) {
+            controller.abort();
+          }
+        });
+      }
+
+      resolve(getSuccessfulPages());
+    };
+
+    urls.forEach((url, index) => {
+      scrapePage(url, apiKey, timeoutMs, controllers[index].signal)
+        .then((page) => {
+          if (page.markdown.trim().length > 0) {
+            pages[index] = page;
+          }
+        })
+        .catch(() => {
+          // Slow or failed pages should not block the whole report.
+        })
+        .finally(() => {
+          settled[index] = true;
+          settledCount += 1;
+
+          const primaryPageSettled = settled[0];
+          const successfulCount = getSuccessfulPages().length;
+
+          if (successfulCount >= targetSuccessCount && primaryPageSettled) {
+            resolveWithCurrentPages(true);
+            return;
+          }
+
+          if (settledCount === urls.length) {
+            resolveWithCurrentPages(false);
+          }
+        });
+    });
+  });
 }
 
-async function scrapePage(url: string, apiKey: string): Promise<PageContext> {
+async function scrapePage(url: string, apiKey: string, timeoutMs: number, signal: AbortSignal): Promise<PageContext> {
   const response = await firecrawlJson<FirecrawlScrapeResponse>(
     "/scrape",
     {
@@ -274,11 +341,15 @@ async function scrapePage(url: string, apiKey: string): Promise<PageContext> {
       formats: ["markdown", "links"],
       onlyMainContent: true,
       onlyCleanContent: false,
-      timeout: 60000,
+      timeout: timeoutMs,
       removeBase64Images: true,
       blockAds: true
     },
-    apiKey
+    apiKey,
+    {
+      timeoutMs,
+      signal
+    }
   );
 
   if (!response.success || !response.data) {
@@ -297,36 +368,58 @@ async function scrapePage(url: string, apiKey: string): Promise<PageContext> {
   };
 }
 
-async function firecrawlJson<T>(path: string, body: unknown, apiKey: string): Promise<T> {
-  const response = await fetch(`${FIRECRAWL_BASE_URL}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-
-  const text = await response.text();
-  const json = parseJson(text);
-
-  if (!response.ok) {
-    const message = typeof json?.error === "string" ? json.error : text;
-    throw new Error(`Firecrawl ${response.status}: ${message}`);
+async function firecrawlJson<T>(
+  path: string,
+  body: unknown,
+  apiKey: string,
+  options?: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
   }
+): Promise<T> {
+  const requestSignal = createRequestSignal(options?.timeoutMs, options?.signal);
 
-  return json as T;
+  try {
+    const response = await fetch(`${FIRECRAWL_BASE_URL}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: requestSignal.signal
+    });
+
+    const text = await response.text();
+    const json = parseJson(text);
+
+    if (!response.ok) {
+      const message = typeof json?.error === "string" ? json.error : text;
+      throw new Error(`Firecrawl ${response.status}: ${message}`);
+    }
+
+    return json as T;
+  } catch (error) {
+    if (isAbortError(error) && options?.timeoutMs) {
+      throw new Error(`Firecrawl ${path} timed out after ${Math.round(options.timeoutMs / 1000)} seconds.`);
+    }
+
+    throw error;
+  } finally {
+    requestSignal.cleanup();
+  }
 }
 
 async function checkSiteFiles(siteUrl: string): Promise<SiteFileCheck[]> {
   const paths = ["/robots.txt", "/sitemap.xml", "/llms.txt"];
+  const timeoutMs = getPositiveInt(process.env.SITE_FILE_TIMEOUT_MS, DEFAULT_SITE_FILE_TIMEOUT_MS);
 
   return Promise.all(
     paths.map(async (path) => {
       try {
         const response = await fetch(`${siteUrl}${path}`, {
           method: "GET",
-          signal: AbortSignal.timeout(5000)
+          signal: AbortSignal.timeout(timeoutMs)
         });
         const text = response.ok ? await response.text() : "";
 
@@ -463,6 +556,33 @@ function parseJson(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function createRequestSignal(timeoutMs?: number, externalSignal?: AbortSignal) {
+  const controller = new AbortController();
+  const timeoutId = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const abortFromExternal = () => controller.abort();
+
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+
+      externalSignal?.removeEventListener("abort", abortFromExternal);
+    }
+  };
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
 function truncate(value: string, maxLength: number) {
