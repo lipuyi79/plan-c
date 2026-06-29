@@ -3,43 +3,50 @@
 import { FormEvent, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Bot,
+  BookOpen,
+  CalendarClock,
   CheckCircle2,
-  Clipboard,
   Database,
   ExternalLink,
   FileSearch,
+  FileText,
   Gauge,
+  Heading,
   Layers3,
+  ListChecks,
   Loader2,
   Mail,
   Search,
   ShieldCheck,
   Sparkles,
+  ScrollText,
   Target,
+  UserRound,
   WandSparkles
 } from "lucide-react";
 import type { AnalyzeApiResponse, GeoAnalysis } from "@/lib/schema";
 
-type Tab = "gaps" | "recommendations" | "queries" | "signals";
-
-const severityLabels = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low"
-};
-
-const supportLabels = {
-  strong: "Strong",
-  partial: "Partial",
-  weak: "Weak",
-  missing: "Missing"
-};
+type Tab = "checks" | "readiness" | "gaps" | "pages";
 
 const verdictLabels = {
-  ready: "Ready for AI recommendations",
+  excellent: "Excellent citation readiness",
+  good: "Good citation readiness",
   needs_work: "Needs work",
   high_risk: "High citation risk"
+};
+
+const statusLabels = {
+  pass: "Pass",
+  warning: "Warning",
+  fail: "Fail",
+  unknown: "Unknown"
+};
+
+const permissionLabels = {
+  allowed: "Allowed",
+  blocked: "Blocked",
+  unknown: "Unknown"
 };
 
 const faqGroups = [
@@ -250,13 +257,13 @@ const legalSections = [
 
 export default function Home() {
   const [url, setUrl] = useState("");
-  const [activeTab, setActiveTab] = useState<Tab>("gaps");
+  const [activeTab, setActiveTab] = useState<Tab>("checks");
   const [result, setResult] = useState<AnalyzeApiResponse | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
   const scoreTone = useMemo(() => {
-    const score = result?.analysis.summary.readinessScore ?? 0;
+    const score = result?.analysis.summary.aiCitationScore ?? 0;
 
     if (score >= 70) {
       return "score-good";
@@ -298,7 +305,7 @@ export default function Home() {
       }
 
       setResult(payload as AnalyzeApiResponse);
-      setActiveTab("gaps");
+      setActiveTab("checks");
     } catch (caughtError) {
       setError(getErrorMessage(caughtError));
     } finally {
@@ -322,8 +329,8 @@ export default function Home() {
           <div className="panel-heading">
             <LogoMark className="panel-logo" />
             <div>
-              <h1>GEO Citation Gap Scanner</h1>
-              <p>Firecrawl + OpenAI + Supabase</p>
+              <h1>AI Citation Audit Scanner</h1>
+              <p>Robots, schema, structure, readiness</p>
             </div>
           </div>
 
@@ -356,9 +363,9 @@ export default function Home() {
           ) : null}
 
           <div className="pipeline" aria-live="polite">
-            <PipelineStep active={isLoading} done={Boolean(result)} icon={<Layers3 size={18} />} label="Discover pages" />
-            <PipelineStep active={isLoading} done={Boolean(result)} icon={<FileSearch size={18} />} label="Extract content" />
-            <PipelineStep active={isLoading} done={Boolean(result)} icon={<Sparkles size={18} />} label="Generate advice" />
+            <PipelineStep active={isLoading} done={Boolean(result)} icon={<Layers3 size={18} />} label="Check crawl files" />
+            <PipelineStep active={isLoading} done={Boolean(result)} icon={<FileSearch size={18} />} label="Extract page signals" />
+            <PipelineStep active={isLoading} done={Boolean(result)} icon={<Sparkles size={18} />} label="Score citation gaps" />
             <PipelineStep
               active={isLoading}
               done={Boolean(result?.scan.persisted)}
@@ -384,7 +391,7 @@ export default function Home() {
               <section className="score-section">
                 <div className={`score-ring ${scoreTone}`}>
                   <Gauge size={24} />
-                  <strong>{Math.round(result.analysis.summary.readinessScore)}</strong>
+                  <strong>{Math.round(result.analysis.summary.aiCitationScore)}</strong>
                   <span>/100</span>
                 </div>
                 <div className="score-copy">
@@ -399,40 +406,40 @@ export default function Home() {
                   </div>
                   <h2>{result.analysis.summary.oneSentenceDiagnosis}</h2>
                   <div className="summary-grid">
-                    <SummaryItem label="Brand" value={result.analysis.summary.brandName} />
-                    <SummaryItem label="Type" value={result.analysis.summary.detectedBusinessType} />
-                    <SummaryItem label="Audience" value={result.analysis.summary.primaryAudience} />
+                    <SummaryItem label="Audited URL" value={result.analysis.summary.auditedUrl} />
+                    <SummaryItem label="Top gap" value={result.analysis.summary.highestPriorityGap} />
+                    <SummaryItem label="Extracted words" value={String(result.analysis.checks.contentWordCount.wordCount)} />
                   </div>
                 </div>
               </section>
 
               <nav className="tabs" aria-label="Result sections">
+                <TabButton active={activeTab === "checks"} icon={<ListChecks size={17} />} onClick={() => setActiveTab("checks")}>
+                  Checks
+                </TabButton>
+                <TabButton
+                  active={activeTab === "readiness"}
+                  icon={<Target size={17} />}
+                  onClick={() => setActiveTab("readiness")}
+                >
+                  Readiness
+                </TabButton>
                 <TabButton active={activeTab === "gaps"} icon={<AlertTriangle size={17} />} onClick={() => setActiveTab("gaps")}>
                   Gaps
                 </TabButton>
                 <TabButton
-                  active={activeTab === "recommendations"}
-                  icon={<Clipboard size={17} />}
-                  onClick={() => setActiveTab("recommendations")}
+                  active={activeTab === "pages"}
+                  icon={<FileSearch size={17} />}
+                  onClick={() => setActiveTab("pages")}
                 >
-                  Advice
-                </TabButton>
-                <TabButton active={activeTab === "queries"} icon={<Target size={17} />} onClick={() => setActiveTab("queries")}>
-                  AI Queries
-                </TabButton>
-                <TabButton
-                  active={activeTab === "signals"}
-                  icon={<CheckCircle2 size={17} />}
-                  onClick={() => setActiveTab("signals")}
-                >
-                  Signals
+                  Pages
                 </TabButton>
               </nav>
 
-              {activeTab === "gaps" ? <GapList analysis={result.analysis} /> : null}
-              {activeTab === "recommendations" ? <RecommendationList analysis={result.analysis} /> : null}
-              {activeTab === "queries" ? <QueryList analysis={result.analysis} /> : null}
-              {activeTab === "signals" ? <SignalList analysis={result.analysis} pages={result.scan.pages} /> : null}
+              {activeTab === "checks" ? <CheckList analysis={result.analysis} /> : null}
+              {activeTab === "readiness" ? <ReadinessPanel analysis={result.analysis} /> : null}
+              {activeTab === "gaps" ? <CitationGapList analysis={result.analysis} /> : null}
+              {activeTab === "pages" ? <PageList pages={result.scan.pages} /> : null}
             </>
           ) : null}
         </section>
@@ -522,7 +529,7 @@ function EmptyState() {
       </div>
       <div>
         <h2>Ready to scan</h2>
-        <p>Your report will appear here with citation gaps, recommendations, AI query targets, and technical signals.</p>
+        <p>Your report will appear here with robots, sitemap, headings, schema, trust signals, readiness, and citation gaps.</p>
       </div>
     </div>
   );
@@ -532,8 +539,8 @@ function LoadingState() {
   return (
     <div className="loading-state">
       <Loader2 className="spin" size={34} />
-      <h2>Generating your GEO report</h2>
-      <p>Page discovery, content extraction, and structured analysis run in a single scan request.</p>
+      <h2>Generating your AI citation audit</h2>
+      <p>Robots, sitemap, page structure, schema, and answer readiness are checked in one scan.</p>
     </div>
   );
 }
@@ -566,163 +573,280 @@ function TabButton({
   );
 }
 
-function GapList({ analysis }: { analysis: GeoAnalysis }) {
+function CheckList({ analysis }: { analysis: GeoAnalysis }) {
+  const checks = analysis.checks;
+  const cards = [
+    {
+      key: "aiCrawlerAccess",
+      icon: <Bot size={18} />,
+      check: checks.aiCrawlerAccess,
+      detail: <CrawlerAccessDetails analysis={analysis} />
+    },
+    {
+      key: "sitemap",
+      icon: <ScrollText size={18} />,
+      check: checks.sitemap,
+      detail: <MetricTags items={[checks.sitemap.exists ? "sitemap.xml found" : "sitemap.xml missing"]} />
+    },
+    {
+      key: "titleAndH1",
+      icon: <FileText size={18} />,
+      check: checks.titleAndH1,
+      detail: <TitleH1Details analysis={analysis} />
+    },
+    {
+      key: "headingStructure",
+      icon: <Heading size={18} />,
+      check: checks.headingStructure,
+      detail: <HeadingDetails analysis={analysis} />
+    },
+    {
+      key: "contentWordCount",
+      icon: <BookOpen size={18} />,
+      check: checks.contentWordCount,
+      detail: <MetricTags items={[`${checks.contentWordCount.wordCount} words/chars`]} />
+    },
+    {
+      key: "faqPresence",
+      icon: <CheckCircle2 size={18} />,
+      check: checks.faqPresence,
+      detail: <MetricTags items={[checks.faqPresence.exists ? "FAQ detected" : "FAQ not detected"]} />
+    },
+    {
+      key: "schemaPresence",
+      icon: <Database size={18} />,
+      check: checks.schemaPresence,
+      detail: (
+        <MetricTags
+          items={[
+            checks.schemaPresence.articleSchemaExists ? "Article schema" : "No Article schema",
+            checks.schemaPresence.faqSchemaExists ? "FAQ schema" : "No FAQ schema",
+            ...checks.schemaPresence.detectedTypes
+          ]}
+        />
+      )
+    },
+    {
+      key: "authorPresence",
+      icon: <UserRound size={18} />,
+      check: checks.authorPresence,
+      detail: <MetricTags items={checks.authorPresence.authors.length ? checks.authorPresence.authors : ["No author found"]} />
+    },
+    {
+      key: "lastUpdatedPresence",
+      icon: <CalendarClock size={18} />,
+      check: checks.lastUpdatedPresence,
+      detail: <MetricTags items={checks.lastUpdatedPresence.dates.length ? checks.lastUpdatedPresence.dates : ["No date found"]} />
+    },
+    {
+      key: "referencesPresence",
+      icon: <Target size={18} />,
+      check: checks.referencesPresence,
+      detail: (
+        <MetricTags
+          items={
+            checks.referencesPresence.references.length
+              ? checks.referencesPresence.references
+              : ["No References or Sources found"]
+          }
+        />
+      )
+    }
+  ];
+
   return (
-    <div className="card-grid">
-      {analysis.citationGaps.map((gap) => (
-        <article className="result-card" key={`${gap.area}-${gap.severity}`}>
+    <div className="audit-grid">
+      {cards.map((card) => (
+        <article className="result-card audit-card" key={card.key}>
           <div className="card-head">
-            <h3>{gap.area}</h3>
-            <span className={`severity ${gap.severity}`}>{severityLabels[gap.severity]}</span>
+            <h3>
+              {card.icon}
+              {card.check.label}
+            </h3>
+            <StatusPill status={card.check.status} />
           </div>
-          <p>{gap.evidence}</p>
+          <p>{card.check.summary}</p>
+          {card.detail}
+          <EvidenceList items={card.check.evidence} />
           <div className="callout">
-            <strong>Why it matters</strong>
-            <span>{gap.whyItMatters}</span>
+            <strong>Optimization</strong>
+            <span>{card.check.recommendation}</span>
           </div>
-          <TagRow items={gap.affectedPages} />
         </article>
       ))}
     </div>
   );
 }
 
-function RecommendationList({ analysis }: { analysis: GeoAnalysis }) {
+function CrawlerAccessDetails({ analysis }: { analysis: GeoAnalysis }) {
   return (
-    <div className="card-grid">
-      {analysis.recommendations.map((recommendation) => (
-        <article className="result-card wide" key={`${recommendation.priority}-${recommendation.title}`}>
-          <div className="card-head">
-            <h3>{recommendation.title}</h3>
-            <span className="priority">{recommendation.priority}</span>
-          </div>
-          <div className="metric-row">
-            <span>Impact: {recommendation.impact}</span>
-            <span>Effort: {recommendation.effort}</span>
-            <span>{recommendation.targetPage}</span>
-          </div>
-          <p>{recommendation.rationale}</p>
-          <ul className="action-list">
-            {recommendation.actions.map((action) => (
-              <li key={action}>{action}</li>
-            ))}
-          </ul>
-          <CopyBlock text={recommendation.exampleCopy} />
-          <div className="callout">
-            <strong>Success metric</strong>
-            <span>{recommendation.successMetric}</span>
-          </div>
-        </article>
+    <div className="crawler-grid">
+      {analysis.checks.aiCrawlerAccess.crawlers.map((crawler) => (
+        <div className={`crawler-chip ${crawler.permission}`} key={crawler.name}>
+          <strong>{crawler.name}</strong>
+          <span>{permissionLabels[crawler.permission]}</span>
+        </div>
       ))}
     </div>
   );
 }
 
-function QueryList({ analysis }: { analysis: GeoAnalysis }) {
+function TitleH1Details({ analysis }: { analysis: GeoAnalysis }) {
+  const check = analysis.checks.titleAndH1;
+
   return (
-    <div className="card-grid">
-      {analysis.aiAnswerTargets.map((target) => (
-        <article className="result-card" key={target.query}>
-          <div className="card-head">
-            <h3>{target.query}</h3>
-            <span className={`support ${target.currentSupportLevel}`}>{supportLabels[target.currentSupportLevel]}</span>
-          </div>
-          <p>{target.expectedMention}</p>
-          <TagRow items={target.missingEvidence} />
-        </article>
-      ))}
+    <div className="field-stack">
+      <div>
+        <span>Title</span>
+        <strong>{check.title || "Missing"}</strong>
+      </div>
+      <div>
+        <span>H1</span>
+        <strong>{check.h1s.join(" | ") || "Missing"}</strong>
+      </div>
     </div>
   );
 }
 
-function SignalList({ analysis, pages }: { analysis: GeoAnalysis; pages: AnalyzeApiResponse["scan"]["pages"] }) {
-  const technicalSignals = Object.entries(analysis.technicalSignals);
+function HeadingDetails({ analysis }: { analysis: GeoAnalysis }) {
+  const check = analysis.checks.headingStructure;
 
+  return (
+    <>
+      <MetricTags items={[`${check.h2Count} H2`, `${check.h3Count} H3`]} />
+      {check.headingOutline.length ? (
+        <div className="outline-list">
+          {check.headingOutline.map((heading) => (
+            <span key={heading}>{heading}</span>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ReadinessPanel({ analysis }: { analysis: GeoAnalysis }) {
   return (
     <div className="signals-layout">
-      <section className="signal-block">
-        <h3>Content signals</h3>
-        <SignalGroup title="Strengths" items={analysis.contentSignals.strengths} />
-        <SignalGroup title="Weaknesses" items={analysis.contentSignals.weaknesses} />
-        <SignalGroup title="Missing assets" items={analysis.contentSignals.missingArtifacts} />
+      <section className="signal-block wide-block">
+        <div className="card-head">
+          <h3>AI Answer Readiness</h3>
+          <StatusPill status={analysis.aiAnswerReadiness.status} />
+        </div>
+        <p>{analysis.aiAnswerReadiness.summary}</p>
+        <div className="callout">
+          <strong>Suggested answer shape</strong>
+          <span>{analysis.aiAnswerReadiness.suggestedAnswerShape}</span>
+        </div>
       </section>
 
       <section className="signal-block">
-        <h3>Technical signals</h3>
-        <div className="technical-list">
-          {technicalSignals.map(([key, value]) => (
-            <div key={key}>
-              <span>{signalLabel(key)}</span>
-              <strong>{value}</strong>
+        <h3>Content structures</h3>
+        <div className="structure-list">
+          {analysis.aiAnswerReadiness.structures.map((structure) => (
+            <div className={`structure-signal ${structure.present ? "present" : "missing"}`} key={structure.name}>
+              <strong>{structure.name}</strong>
+              <span>{structure.present ? "Present" : "Missing"}</span>
+              <small>{structure.evidence}</small>
             </div>
           ))}
         </div>
       </section>
 
       <section className="signal-block">
-        <h3>Scanned pages</h3>
-        <div className="page-list">
-          {pages.map((page) => (
-            <a key={page.url} href={page.url} target="_blank" rel="noreferrer">
-              <span>{page.title || page.url}</span>
-              <small>{page.wordCount} words</small>
-            </a>
-          ))}
-        </div>
-      </section>
-
-      <section className="signal-block">
-        <h3>Next steps</h3>
-        <SignalGroup title="Quick wins" items={analysis.quickWins} />
-        <SignalGroup title="Roadmap" items={analysis.nextSteps} />
+        <h3>Missing structures</h3>
+        <EvidenceList
+          items={
+            analysis.aiAnswerReadiness.missingStructures.length
+              ? analysis.aiAnswerReadiness.missingStructures
+              : ["No major answer-structure gaps returned by the model."]
+          }
+        />
       </section>
     </div>
   );
 }
 
-function SignalGroup({ title, items }: { title: string; items: string[] }) {
+function CitationGapList({ analysis }: { analysis: GeoAnalysis }) {
   return (
-    <div className="signal-group">
-      <span>{title}</span>
-      <ul>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
+    <div className="card-grid">
+      {analysis.aiCitationGaps.map((gap) => (
+        <article className="result-card wide" key={`${gap.priority}-${gap.area}`}>
+          <div className="card-head">
+            <h3>{gap.area}</h3>
+            <span className="priority">{gap.priority}</span>
+          </div>
+          <p>{gap.evidence}</p>
+          <div className="callout">
+            <strong>Recommendation</strong>
+            <span>{gap.recommendation}</span>
+          </div>
+          <div className="callout secondary-callout">
+            <strong>Expected impact</strong>
+            <span>{gap.expectedImpact}</span>
+          </div>
+        </article>
+      ))}
     </div>
   );
 }
 
-function TagRow({ items }: { items: string[] }) {
+function PageList({ pages }: { pages: AnalyzeApiResponse["scan"]["pages"] }) {
+  return (
+    <div className="card-grid">
+      {pages.map((page) => (
+        <article className="result-card" key={page.url}>
+          <div className="card-head">
+            <h3>{page.title || "Untitled page"}</h3>
+            <a href={page.url} target="_blank" rel="noreferrer" aria-label="Open scanned page">
+              <ExternalLink size={17} />
+            </a>
+          </div>
+          <p>{page.description || page.url}</p>
+          <MetricTags
+            items={[
+              `${page.wordCount} words/chars`,
+              `${page.h1s.length} H1`,
+              `${page.h2Count} H2`,
+              `${page.h3Count} H3`
+            ]}
+          />
+          <EvidenceList items={page.h1s.length ? page.h1s.map((h1) => `H1: ${h1}`) : ["No H1 extracted."]} />
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: GeoAnalysis["checks"]["sitemap"]["status"] }) {
+  return <span className={`status-pill ${status}`}>{statusLabels[status]}</span>;
+}
+
+function MetricTags({ items }: { items: string[] }) {
   if (items.length === 0) {
     return null;
   }
 
   return (
     <div className="tag-row">
-      {items.slice(0, 6).map((item) => (
+      {items.slice(0, 8).map((item) => (
         <span key={item}>{item}</span>
       ))}
     </div>
   );
 }
 
-function CopyBlock({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  async function copy() {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+function EvidenceList({ items }: { items: string[] }) {
+  if (items.length === 0) {
+    return null;
   }
 
   return (
-    <div className="copy-block">
-      <p>{text}</p>
-      <button type="button" onClick={copy} title="Copy example copy" aria-label="Copy example copy">
-        {copied ? <CheckCircle2 size={17} /> : <Clipboard size={17} />}
-      </button>
-    </div>
+    <ul className="evidence-list">
+      {items.slice(0, 5).map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
   );
 }
 
@@ -826,18 +950,4 @@ function XSocialIcon() {
       <path d="M13.87 10.16 21.18 2h-1.73l-6.35 7.08L8.03 2H2.18l7.66 10.7L2.18 22h1.73l6.7-7.48L15.97 22h5.85l-7.95-11.84Zm-2.37 2.65-.78-1.07L4.55 3.25H7.2l4.99 6.86.78 1.07 6.49 8.94h-2.65l-5.31-7.31Z" />
     </svg>
   );
-}
-
-function signalLabel(key: string) {
-  const labels: Record<string, string> = {
-    schemaMarkup: "Schema",
-    faqCoverage: "FAQ",
-    authorTrust: "Trust",
-    freshness: "Freshness",
-    crawlability: "Crawlability",
-    llmsTxt: "llms.txt",
-    sitemapClarity: "Sitemap"
-  };
-
-  return labels[key] ?? key;
 }
