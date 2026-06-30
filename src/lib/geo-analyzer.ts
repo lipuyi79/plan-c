@@ -11,12 +11,12 @@ import {
   type ScannedPage
 } from "./schema";
 
-const FIRECRAWL_BASE_URL = "https://api.firecrawl.dev/v2";
-const DEFAULT_MAP_LIMIT = 6;
+const APIFY_BASE_URL = "https://api.apify.com/v2";
+const APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR = "apify~website-content-crawler";
 const DEFAULT_SCAN_MAX_PAGES = 2;
-const DEFAULT_SCAN_READY_PAGES = 1;
-const DEFAULT_MAP_TIMEOUT_MS = 4000;
-const DEFAULT_SCRAPE_TIMEOUT_MS = 12000;
+const DEFAULT_APIFY_CRAWL_TIMEOUT_MS = 60000;
+const DEFAULT_APIFY_MAX_CRAWL_DEPTH = 1;
+const DEFAULT_APIFY_USE_SITEMAPS = false;
 const DEFAULT_HTML_FETCH_TIMEOUT_MS = 5000;
 const DEFAULT_SITE_FILE_TIMEOUT_MS = 1500;
 const DEFAULT_PAGE_MARKDOWN_LIMIT = 4500;
@@ -31,37 +31,17 @@ type NormalizedTarget = {
   hostname: string;
 };
 
-type FirecrawlMapLink =
-  | string
-  | {
-      url?: string;
-      title?: string;
-      description?: string;
-    };
-
-type FirecrawlMapResponse = {
-  success?: boolean;
-  links?: FirecrawlMapLink[];
-  error?: string;
-};
-
-type FirecrawlScrapeResponse = {
-  success?: boolean;
-  data?: {
-    markdown?: string;
-    links?: string[];
-    metadata?: {
-      title?: string;
-      description?: string;
-      sourceURL?: string;
-      url?: string;
-      statusCode?: number;
-      error?: string;
-      [key: string]: unknown;
-    };
-    warning?: string;
-  };
-  error?: string;
+type ApifyDatasetItem = Record<string, unknown> & {
+  url?: string;
+  loadedUrl?: string;
+  markdown?: string;
+  text?: string;
+  html?: string;
+  title?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  links?: unknown;
+  outlinks?: unknown;
 };
 
 type PageContext = ScannedPage & {
@@ -106,19 +86,18 @@ export async function analyzeSite(rawUrl: string, language: string): Promise<Ana
   const target = normalizeTarget(rawUrl);
   await assertPublicTarget(target);
 
-  const firecrawlApiKey = getSecretEnv("FIRECRAWL_API_KEY", "The website cannot be scanned.");
+  const apifyToken = getSecretEnv("APIFY_TOKEN", "The website cannot be scanned.");
   const openaiApiKey = getSecretEnv("OPENAI_API_KEY", "The AI citation analysis cannot be generated.");
 
   const maxPages = getPositiveInt(process.env.SCAN_MAX_PAGES, DEFAULT_SCAN_MAX_PAGES);
-  const readyPageCount = Math.min(maxPages, getPositiveInt(process.env.SCAN_READY_PAGES, DEFAULT_SCAN_READY_PAGES));
   const siteFilesPromise = checkSiteFiles(target.siteUrl);
   const [pageContexts, siteFiles] = await Promise.all([
-    collectPageContexts(target, firecrawlApiKey, maxPages, readyPageCount),
+    collectPageContexts(target, apifyToken, maxPages),
     siteFilesPromise
   ]);
 
   if (pageContexts.length === 0) {
-    throw new Error("Firecrawl did not return analyzable page content.");
+    throw new Error("Apify did not return analyzable page content.");
   }
 
   const checks = buildCrawlChecks(target, pageContexts, siteFiles);
@@ -216,98 +195,36 @@ function isPrivateIp(ip: string) {
   );
 }
 
-async function collectPageContexts(
-  target: NormalizedTarget,
-  apiKey: string,
-  maxPages: number,
-  readyPageCount: number
-) {
-  const initialUrls = pickScanUrls(
-    target.inputUrl,
-    target.siteUrl,
-    [],
-    Math.min(maxPages, Math.max(1, readyPageCount))
-  );
-  const discoveryController = new AbortController();
-  const discoveryPromise = discoverUrls(target, apiKey, discoveryController.signal);
-  const initialPages = await scrapePages(initialUrls, apiKey, Math.min(readyPageCount, initialUrls.length));
-
-  if (initialPages.length >= readyPageCount) {
-    discoveryController.abort();
-    return initialPages.slice(0, maxPages);
-  }
-
-  const candidateUrls = await discoveryPromise;
-  const selectedUrls = pickScanUrls(target.inputUrl, target.siteUrl, candidateUrls, maxPages);
-  const seenUrlKeys = new Set(initialUrls.map((url) => toUrlKey(url, target.siteUrl)));
-  const extraUrls = selectedUrls
-    .filter((url) => !seenUrlKeys.has(toUrlKey(url, target.siteUrl)))
-    .slice(0, Math.max(0, maxPages - initialPages.length));
-
-  if (extraUrls.length === 0) {
-    return initialPages;
-  }
-
-  const extraPages = await scrapePages(
-    extraUrls,
-    apiKey,
-    Math.min(Math.max(1, readyPageCount - initialPages.length), extraUrls.length)
+async function collectPageContexts(target: NormalizedTarget, apiToken: string, maxPages: number) {
+  const timeoutMs = getPositiveInt(process.env.APIFY_CRAWL_TIMEOUT_MS, DEFAULT_APIFY_CRAWL_TIMEOUT_MS);
+  const items = await apifyRunSync<ApifyDatasetItem[]>(
+    APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR,
+    {
+      startUrls: [{ url: target.inputUrl }],
+      maxCrawlPages: maxPages,
+      maxResults: maxPages,
+      maxCrawlDepth: getPositiveInt(process.env.APIFY_MAX_CRAWL_DEPTH, DEFAULT_APIFY_MAX_CRAWL_DEPTH),
+      saveMarkdown: true,
+      saveHtml: false,
+      useSitemaps: getBooleanEnv(process.env.APIFY_USE_SITEMAPS, DEFAULT_APIFY_USE_SITEMAPS)
+    },
+    apiToken,
+    timeoutMs
   );
 
-  return dedupePageContexts([...initialPages, ...extraPages]).slice(0, maxPages);
-}
-
-async function discoverUrls(target: NormalizedTarget, apiKey: string, signal?: AbortSignal) {
-  const limit = getPositiveInt(process.env.FIRECRAWL_MAP_LIMIT, DEFAULT_MAP_LIMIT);
-  const timeoutMs = getPositiveInt(process.env.FIRECRAWL_MAP_TIMEOUT_MS, DEFAULT_MAP_TIMEOUT_MS);
-
-  try {
-    const response = await firecrawlJson<FirecrawlMapResponse>(
-      "/map",
-      {
-        url: target.siteUrl,
-        sitemap: "include",
-        includeSubdomains: false,
-        ignoreQueryParameters: true,
-        limit,
-        timeout: timeoutMs
-      },
-      apiKey,
-      {
-        timeoutMs,
-        signal
-      }
-    );
-
-    return (response.links ?? [])
-      .map((link) => (typeof link === "string" ? link : link.url))
-      .filter((url): url is string => Boolean(url));
-  } catch {
-    return [target.inputUrl];
+  if (!Array.isArray(items)) {
+    throw new Error("Apify crawler returned an unexpected response.");
   }
-}
 
-function pickScanUrls(inputUrl: string, siteUrl: string, urls: string[], maxPages: number) {
-  const origin = new URL(siteUrl).origin;
-  const inputKey = toUrlKey(inputUrl, origin);
-  const unique = new Map<string, string>();
+  const origin = new URL(target.siteUrl).origin;
+  const inputKey = toUrlKey(target.inputUrl, origin);
+  const pages = (await Promise.all(items.map((item) => apifyItemToPageContext(item, target)))).filter(
+    (page) => page.rawMarkdown.trim().length > 0 || page.html.trim().length > 0
+  );
 
-  [inputUrl, siteUrl, ...urls].forEach((url) => {
-    try {
-      const parsed = new URL(url, origin);
-      parsed.hash = "";
-
-      if (parsed.origin === origin) {
-        unique.set(normalizeUrlKey(parsed), parsed.toString());
-      }
-    } catch {
-      // Ignore malformed URLs returned by third-party APIs.
-    }
-  });
-
-  return [...unique.values()]
-    .sort((a, b) => scoreUrl(a, origin, inputKey) - scoreUrl(b, origin, inputKey))
-    .slice(0, Math.max(1, maxPages));
+  return dedupePageContexts(pages)
+    .sort((a, b) => scoreUrl(a.url, origin, inputKey) - scoreUrl(b.url, origin, inputKey))
+    .slice(0, maxPages);
 }
 
 function toUrlKey(url: string, baseUrl: string) {
@@ -360,108 +277,33 @@ function scoreUrl(url: string, origin: string, inputKey: string) {
   return (matchedIndex === -1 ? 50 : matchedIndex + 2) + depth * 3;
 }
 
-async function scrapePages(urls: string[], apiKey: string, readyPageCount: number) {
-  if (urls.length === 0) {
-    return [];
-  }
-
-  const timeoutMs = getPositiveInt(process.env.FIRECRAWL_SCRAPE_TIMEOUT_MS, DEFAULT_SCRAPE_TIMEOUT_MS);
-  const targetSuccessCount = Math.min(Math.max(1, readyPageCount), urls.length);
-  const controllers = urls.map(() => new AbortController());
-  const pages = new Array<PageContext | null>(urls.length).fill(null);
-  const settled = new Array<boolean>(urls.length).fill(false);
-
-  return new Promise<PageContext[]>((resolve) => {
-    let settledCount = 0;
-    let resolved = false;
-
-    const getSuccessfulPages = () => pages.filter((page): page is PageContext => page !== null);
-    const resolveWithCurrentPages = (abortPending: boolean) => {
-      if (resolved) {
-        return;
-      }
-
-      resolved = true;
-
-      if (abortPending) {
-        controllers.forEach((controller, index) => {
-          if (!settled[index]) {
-            controller.abort();
-          }
-        });
-      }
-
-      resolve(getSuccessfulPages());
-    };
-
-    urls.forEach((url, index) => {
-      scrapePage(url, apiKey, timeoutMs, controllers[index].signal)
-        .then((page) => {
-          if (page.rawMarkdown.trim().length > 0 || page.html.trim().length > 0) {
-            pages[index] = page;
-          }
-        })
-        .catch(() => {
-          // Slow or failed pages should not block the whole report.
-        })
-        .finally(() => {
-          settled[index] = true;
-          settledCount += 1;
-
-          const primaryPageSettled = settled[0];
-          const successfulCount = getSuccessfulPages().length;
-
-          if (successfulCount >= targetSuccessCount && primaryPageSettled) {
-            resolveWithCurrentPages(true);
-            return;
-          }
-
-          if (settledCount === urls.length) {
-            resolveWithCurrentPages(false);
-          }
-        });
-    });
-  });
-}
-
-async function scrapePage(url: string, apiKey: string, timeoutMs: number, signal: AbortSignal): Promise<PageContext> {
-  const htmlPromise = fetchPageHtml(
-    url,
-    Math.min(timeoutMs, getPositiveInt(process.env.HTML_FETCH_TIMEOUT_MS, DEFAULT_HTML_FETCH_TIMEOUT_MS)),
-    signal
-  );
-  const response = await firecrawlJson<FirecrawlScrapeResponse>(
-    "/scrape",
-    {
-      url,
-      formats: ["markdown"],
-      onlyMainContent: true,
-      onlyCleanContent: true,
-      timeout: timeoutMs,
-      removeBase64Images: true,
-      blockAds: true
-    },
-    apiKey,
-    {
-      timeoutMs,
-      signal
-    }
-  );
-
-  if (!response.success || !response.data) {
-    throw new Error(response.error ?? "Firecrawl scrape failed");
-  }
-
-  const rawMarkdown = cleanMarkdown(response.data.markdown ?? "");
+async function apifyItemToPageContext(item: ApifyDatasetItem, target: NormalizedTarget): Promise<PageContext> {
+  const metadata = isRecord(item.metadata) ? item.metadata : {};
+  const request = isRecord(item.request) ? item.request : {};
+  const crawl = isRecord(item.crawl) ? item.crawl : {};
+  const url =
+    firstString(
+      metadata.sourceURL,
+      metadata.sourceUrl,
+      metadata.url,
+      metadata.canonicalUrl,
+      item.url,
+      item.loadedUrl,
+      request.loadedUrl,
+      request.url,
+      crawl.loadedUrl,
+      target.inputUrl
+    ) ?? target.inputUrl;
+  const rawMarkdown = cleanMarkdown(firstString(item.markdown, item.text, stripHtml(firstString(item.html) ?? "")) ?? "");
   const headings = extractMarkdownHeadings(rawMarkdown);
-  const metadata = response.data.metadata ?? {};
-  const title = String(metadata.title ?? "");
-  const html = await htmlPromise.catch(() => "");
+  const html =
+    firstString(item.html) ??
+    (await fetchPageHtml(url, getPositiveInt(process.env.HTML_FETCH_TIMEOUT_MS, DEFAULT_HTML_FETCH_TIMEOUT_MS)).catch(() => ""));
 
   return {
-    url: metadata.sourceURL ?? metadata.url ?? url,
-    title,
-    description: String(metadata.description ?? ""),
+    url,
+    title: firstString(metadata.title, item.title) ?? "",
+    description: firstString(metadata.description, item.description) ?? "",
     wordCount: countWords(rawMarkdown),
     h1s: headings.filter((heading) => heading.level === 1).map((heading) => heading.text).slice(0, 5),
     h2Count: headings.filter((heading) => heading.level === 2).length,
@@ -469,7 +311,7 @@ async function scrapePage(url: string, apiKey: string, timeoutMs: number, signal
     markdown: selectImportantMarkdown(rawMarkdown, getPositiveInt(process.env.PAGE_MARKDOWN_LIMIT, DEFAULT_PAGE_MARKDOWN_LIMIT)),
     rawMarkdown,
     html,
-    links: normalizeLinks(response.data.links ?? [])
+    links: normalizeLinks([...extractLinksFromUnknown(item.links), ...extractLinksFromUnknown(item.outlinks)])
   };
 }
 
@@ -498,22 +340,24 @@ async function fetchPageHtml(url: string, timeoutMs: number, signal?: AbortSigna
   }
 }
 
-async function firecrawlJson<T>(
-  path: string,
+async function apifyRunSync<T>(
+  actorId: string,
   body: unknown,
-  apiKey: string,
-  options?: {
-    timeoutMs?: number;
-    signal?: AbortSignal;
-  }
+  apiToken: string,
+  timeoutMs: number
 ): Promise<T> {
-  const requestSignal = createRequestSignal(options?.timeoutMs, options?.signal);
+  const requestSignal = createRequestSignal(timeoutMs);
+  const url = new URL(`${APIFY_BASE_URL}/acts/${actorId}/run-sync-get-dataset-items`);
+
+  url.searchParams.set("format", "json");
+  url.searchParams.set("clean", "true");
+  url.searchParams.set("timeout", String(Math.ceil(timeoutMs / 1000)));
 
   try {
-    const response = await fetch(`${FIRECRAWL_BASE_URL}${path}`, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiToken}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify(body),
@@ -524,14 +368,13 @@ async function firecrawlJson<T>(
     const json = parseJson(text);
 
     if (!response.ok) {
-      const message = typeof json?.error === "string" ? json.error : text;
-      throw new Error(`Firecrawl ${response.status}: ${message}`);
+      throw new Error(`Apify ${response.status}: ${extractApiErrorMessage(json, text)}`);
     }
 
     return json as T;
   } catch (error) {
-    if (isAbortError(error) && options?.timeoutMs) {
-      throw new Error(`Firecrawl ${path} timed out after ${Math.round(options.timeoutMs / 1000)} seconds.`);
+    if (isAbortError(error)) {
+      throw new Error(`Apify ${actorId} timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
     }
 
     throw error;
@@ -1389,9 +1232,27 @@ function statusScore(status: CrawlChecks[keyof CrawlChecks]["status"]) {
   return 0;
 }
 
-function parseJson(text: string): Record<string, unknown> | null {
+function extractApiErrorMessage(json: unknown, fallback: string) {
+  if (isRecord(json)) {
+    if (typeof json.error === "string") {
+      return json.error;
+    }
+
+    if (isRecord(json.error) && typeof json.error.message === "string") {
+      return json.error.message;
+    }
+
+    if (typeof json.message === "string") {
+      return json.message;
+    }
+  }
+
+  return fallback;
+}
+
+function parseJson(text: string): unknown | null {
   try {
-    return JSON.parse(text) as Record<string, unknown>;
+    return JSON.parse(text) as unknown;
   } catch {
     return null;
   }
@@ -1556,6 +1417,33 @@ function normalizeLinks(links: string[]) {
   return [...new Set(links.filter((link) => /^https?:\/\//i.test(link)))].slice(0, 80);
 }
 
+function extractLinksFromUnknown(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractLinksFromUnknown(item));
+  }
+
+  if (isRecord(value)) {
+    const url = firstString(value.url, value.href);
+    return url ? [url] : [];
+  }
+
+  return [];
+}
+
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
 function normalizeContentLine(line: string) {
   return line
     .replace(/\s+/g, " ")
@@ -1686,6 +1574,22 @@ function clampScore(value: number) {
 function getPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function getBooleanEnv(value: string | undefined, fallback: boolean) {
+  if (!value) {
+    return fallback;
+  }
+
+  if (/^(1|true|yes|on)$/i.test(value.trim())) {
+    return true;
+  }
+
+  if (/^(0|false|no|off)$/i.test(value.trim())) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function getSecretEnv(name: string, purpose: string) {
