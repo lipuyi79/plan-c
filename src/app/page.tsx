@@ -830,7 +830,9 @@ function MetricTags({ items }: { items: string[] }) {
   return (
     <div className="tag-row">
       {items.slice(0, 8).map((item) => (
-        <span key={item}>{item}</span>
+        <span key={item} title={item}>
+          {item}
+        </span>
       ))}
     </div>
   );
