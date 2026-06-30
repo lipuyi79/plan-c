@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const DEFAULT_PERSIST_TIMEOUT_MS = 1500;
+const DEFAULT_ANALYZE_TIMEOUT_MS = 55000;
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
@@ -15,7 +16,11 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const input = AnalyzeRequestSchema.parse(body);
-    const result = await analyzeSite(input.url, input.language);
+    const result = await withTimeout(
+      analyzeSite(input.url, input.language),
+      getPositiveInt(process.env.ANALYZE_TIMEOUT_MS, DEFAULT_ANALYZE_TIMEOUT_MS),
+      "Analysis timed out before the deployment function limit. Try a smaller page or increase ANALYZE_TIMEOUT_MS on a plan that supports longer functions."
+    );
     const createdAt = new Date().toISOString();
     const scanRecord = await persistScanWithTimeout({
       inputUrl: result.inputUrl,
@@ -51,6 +56,23 @@ export async function POST(request: Request) {
         status: 400
       }
     );
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
 }
 

@@ -13,8 +13,9 @@ import {
 
 const APIFY_BASE_URL = "https://api.apify.com/v2";
 const APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR = "apify~website-content-crawler";
-const DEFAULT_SCAN_MAX_PAGES = 2;
-const DEFAULT_APIFY_CRAWL_TIMEOUT_MS = 60000;
+const DEFAULT_SCAN_MAX_PAGES = 1;
+const DEFAULT_APIFY_CRAWL_TIMEOUT_MS = 20000;
+const MAX_APIFY_CRAWL_TIMEOUT_MS = 25000;
 const DEFAULT_APIFY_MAX_CRAWL_DEPTH = 1;
 const DEFAULT_APIFY_USE_SITEMAPS = false;
 const DEFAULT_HTML_FETCH_TIMEOUT_MS = 5000;
@@ -22,6 +23,9 @@ const DEFAULT_SITE_FILE_TIMEOUT_MS = 1500;
 const DEFAULT_PAGE_MARKDOWN_LIMIT = 4500;
 const DEFAULT_PROMPT_CONTEXT_LIMIT = 18000;
 const DEFAULT_HTML_CAPTURE_LIMIT = 120000;
+const DEFAULT_OPENAI_TIMEOUT_MS = 22000;
+const MAX_OPENAI_TIMEOUT_MS = 25000;
+const DEFAULT_OPENAI_MAX_RETRIES = 0;
 
 const AI_CRAWLERS = ["GPTBot", "ClaudeBot", "Google-Extended", "PerplexityBot", "CCBot", "anthropic-ai", "Bytespider"];
 
@@ -196,26 +200,46 @@ function isPrivateIp(ip: string) {
 }
 
 async function collectPageContexts(target: NormalizedTarget, apiToken: string, maxPages: number) {
-  const timeoutMs = getPositiveInt(process.env.APIFY_CRAWL_TIMEOUT_MS, DEFAULT_APIFY_CRAWL_TIMEOUT_MS);
-  const items = await apifyRunSync<ApifyDatasetItem[]>(
-    APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR,
-    {
-      startUrls: [{ url: target.inputUrl }],
-      maxCrawlPages: maxPages,
-      maxResults: maxPages,
-      maxCrawlDepth: getPositiveInt(process.env.APIFY_MAX_CRAWL_DEPTH, DEFAULT_APIFY_MAX_CRAWL_DEPTH),
-      saveMarkdown: true,
-      saveHtml: false,
-      useSitemaps: getBooleanEnv(process.env.APIFY_USE_SITEMAPS, DEFAULT_APIFY_USE_SITEMAPS)
-    },
-    apiToken,
-    timeoutMs
+  const timeoutMs = getBoundedPositiveInt(
+    process.env.APIFY_CRAWL_TIMEOUT_MS,
+    DEFAULT_APIFY_CRAWL_TIMEOUT_MS,
+    MAX_APIFY_CRAWL_TIMEOUT_MS
   );
 
-  if (!Array.isArray(items)) {
-    throw new Error("Apify crawler returned an unexpected response.");
+  try {
+    const items = await apifyRunSync<ApifyDatasetItem[]>(
+      APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR,
+      {
+        startUrls: [{ url: target.inputUrl }],
+        maxCrawlPages: maxPages,
+        maxResults: maxPages,
+        maxCrawlDepth: getPositiveInt(process.env.APIFY_MAX_CRAWL_DEPTH, DEFAULT_APIFY_MAX_CRAWL_DEPTH),
+        saveMarkdown: true,
+        saveHtml: false,
+        useSitemaps: getBooleanEnv(process.env.APIFY_USE_SITEMAPS, DEFAULT_APIFY_USE_SITEMAPS)
+      },
+      apiToken,
+      timeoutMs
+    );
+
+    if (!Array.isArray(items)) {
+      throw new Error("Apify crawler returned an unexpected response.");
+    }
+
+    const pages = await normalizeApifyItems(items, target, maxPages);
+
+    if (pages.length > 0) {
+      return pages;
+    }
+  } catch {
+    // Fallback below keeps hosted scans from failing when the crawler is slow.
   }
 
+  const fallbackPage = await fetchFallbackPageContext(target);
+  return fallbackPage ? [fallbackPage] : [];
+}
+
+async function normalizeApifyItems(items: ApifyDatasetItem[], target: NormalizedTarget, maxPages: number) {
   const origin = new URL(target.siteUrl).origin;
   const inputKey = toUrlKey(target.inputUrl, origin);
   const pages = (await Promise.all(items.map((item) => apifyItemToPageContext(item, target)))).filter(
@@ -312,6 +336,31 @@ async function apifyItemToPageContext(item: ApifyDatasetItem, target: Normalized
     rawMarkdown,
     html,
     links: normalizeLinks([...extractLinksFromUnknown(item.links), ...extractLinksFromUnknown(item.outlinks)])
+  };
+}
+
+async function fetchFallbackPageContext(target: NormalizedTarget): Promise<PageContext | null> {
+  const html = await fetchPageHtml(target.inputUrl, getPositiveInt(process.env.HTML_FETCH_TIMEOUT_MS, DEFAULT_HTML_FETCH_TIMEOUT_MS));
+
+  if (!html.trim()) {
+    return null;
+  }
+
+  const rawMarkdown = cleanMarkdown(stripHtml(html));
+  const headings = extractMarkdownHeadings(rawMarkdown);
+
+  return {
+    url: target.inputUrl,
+    title: extractHtmlTitle(html),
+    description: getMetaContents(html, ["description", "og:description"]).at(0) ?? "",
+    wordCount: countWords(rawMarkdown),
+    h1s: headings.filter((heading) => heading.level === 1).map((heading) => heading.text).slice(0, 5),
+    h2Count: headings.filter((heading) => heading.level === 2).length,
+    h3Count: headings.filter((heading) => heading.level === 3).length,
+    markdown: selectImportantMarkdown(rawMarkdown, getPositiveInt(process.env.PAGE_MARKDOWN_LIMIT, DEFAULT_PAGE_MARKDOWN_LIMIT)),
+    rawMarkdown,
+    html,
+    links: normalizeLinks(extractUrls(html))
   };
 }
 
@@ -736,51 +785,59 @@ async function runOpenAiAnalysis({
   language: string;
   openaiApiKey: string;
 }): Promise<AiCitationAnalysis> {
+  const timeout = getBoundedPositiveInt(process.env.OPENAI_TIMEOUT_MS, DEFAULT_OPENAI_TIMEOUT_MS, MAX_OPENAI_TIMEOUT_MS);
   const openai = new OpenAI({
     apiKey: openaiApiKey,
-    baseURL: getOptionalEnv("OPENAI_BASE_URL")
+    baseURL: getOptionalEnv("OPENAI_BASE_URL"),
+    timeout,
+    maxRetries: getNonNegativeInt(process.env.OPENAI_MAX_RETRIES, DEFAULT_OPENAI_MAX_RETRIES)
   });
   const model = process.env.OPENAI_MODEL || "gpt-5.5";
   const context = buildPromptContext(target, pages, siteFiles, checks, answerStructures);
 
-  const response = await openai.responses.parse({
-    model,
-    input: [
-      {
-        role: "system",
-        content: [
-          "You are a senior AI citation and answer-engine readiness auditor.",
-          "Use the provided crawl audit as the source of truth.",
-          "Do not claim robots, schema, author, dates, references, or FAQ exist unless the local audit says they exist.",
-          `Return user-facing content in ${language}.`,
-          "Score how likely the page is to be confidently cited by AI answer engines."
-        ].join(" ")
-      },
-      {
-        role: "user",
-        content: [
-          "Create the AI Citation Score and AI Citation Gap recommendations for this website.",
-          "",
-          "Scoring guidance:",
-          "- 0-39: high risk, key crawlability, identity, evidence, or structure signals are absent.",
-          "- 40-69: needs work, the page is understandable but missing important citation support.",
-          "- 70-84: good, mostly citation-ready with a few optimization gaps.",
-          "- 85-100: excellent, highly structured, current, evidence-backed, and AI-crawler accessible.",
-          "",
-          "Prioritize gaps in this order when evidence supports them:",
-          "1. AI crawler access and sitemap discoverability.",
-          "2. Title/H1 and H2/H3 answer structure.",
-          "3. Article/FAQ schema, FAQ, author, update date, and references.",
-          "4. Summary, steps, pros/cons, comparisons, and other answer-ready formats.",
-          "",
-          context
-        ].join("\n")
+  const response = await openai.responses.parse(
+    {
+      model,
+      input: [
+        {
+          role: "system",
+          content: [
+            "You are a senior AI citation and answer-engine readiness auditor.",
+            "Use the provided crawl audit as the source of truth.",
+            "Do not claim robots, schema, author, dates, references, or FAQ exist unless the local audit says they exist.",
+            `Return user-facing content in ${language}.`,
+            "Score how likely the page is to be confidently cited by AI answer engines."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: [
+            "Create the AI Citation Score and AI Citation Gap recommendations for this website.",
+            "",
+            "Scoring guidance:",
+            "- 0-39: high risk, key crawlability, identity, evidence, or structure signals are absent.",
+            "- 40-69: needs work, the page is understandable but missing important citation support.",
+            "- 70-84: good, mostly citation-ready with a few optimization gaps.",
+            "- 85-100: excellent, highly structured, current, evidence-backed, and AI-crawler accessible.",
+            "",
+            "Prioritize gaps in this order when evidence supports them:",
+            "1. AI crawler access and sitemap discoverability.",
+            "2. Title/H1 and H2/H3 answer structure.",
+            "3. Article/FAQ schema, FAQ, author, update date, and references.",
+            "4. Summary, steps, pros/cons, comparisons, and other answer-ready formats.",
+            "",
+            context
+          ].join("\n")
+        }
+      ],
+      text: {
+        format: zodTextFormat(AiCitationAnalysisSchema, "ai_citation_analysis")
       }
-    ],
-    text: {
-      format: zodTextFormat(AiCitationAnalysisSchema, "ai_citation_analysis")
+    },
+    {
+      timeout
     }
-  });
+  );
 
   const parsed = response.output_parsed;
 
@@ -1158,6 +1215,11 @@ function getMetaContents(html: string, names: string[]) {
   }
 
   return values;
+}
+
+function extractHtmlTitle(html: string) {
+  const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? cleanEvidence(match[1]) : "";
 }
 
 function parseAttributes(tag: string) {
@@ -1574,6 +1636,15 @@ function clampScore(value: number) {
 function getPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function getBoundedPositiveInt(value: string | undefined, fallback: number, max: number) {
+  return Math.min(getPositiveInt(value, fallback), max);
+}
+
+function getNonNegativeInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
 function getBooleanEnv(value: string | undefined, fallback: boolean) {

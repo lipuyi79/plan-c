@@ -34,6 +34,8 @@ Deploy the app to Vercel or another Next.js/Node hosting provider, then add thes
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
+- `OPENAI_TIMEOUT_MS`
+- `OPENAI_MAX_RETRIES`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `APIFY_CRAWL_TIMEOUT_MS`
@@ -44,6 +46,7 @@ Deploy the app to Vercel or another Next.js/Node hosting provider, then add thes
 - `SCAN_MAX_PAGES`
 - `PAGE_MARKDOWN_LIMIT`
 - `PROMPT_CONTEXT_LIMIT`
+- `ANALYZE_TIMEOUT_MS`
 - `SCAN_PERSIST_TIMEOUT_MS`
 
 If the browser shows that the analysis API is not reachable, confirm that the deployed URL is not a static GitHub Pages site and that the environment variables are configured on the server.
@@ -55,16 +58,19 @@ APIFY_TOKEN=
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://sub2.de5.net/v1
 OPENAI_MODEL=gpt-5.5
+OPENAI_TIMEOUT_MS=22000
+OPENAI_MAX_RETRIES=0
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
-APIFY_CRAWL_TIMEOUT_MS=60000
+APIFY_CRAWL_TIMEOUT_MS=20000
 APIFY_MAX_CRAWL_DEPTH=1
 APIFY_USE_SITEMAPS=false
 HTML_FETCH_TIMEOUT_MS=5000
 SITE_FILE_TIMEOUT_MS=1500
-SCAN_MAX_PAGES=2
+SCAN_MAX_PAGES=1
 PAGE_MARKDOWN_LIMIT=4500
 PROMPT_CONTEXT_LIMIT=18000
+ANALYZE_TIMEOUT_MS=55000
 SCAN_PERSIST_TIMEOUT_MS=1500
 ```
 
@@ -74,14 +80,16 @@ Use the raw API key value only. Do not include shell prefixes such as `export OP
 
 ### Scan speed tuning
 
-- `SCAN_MAX_PAGES` controls how many candidate URLs Apify can crawl.
-- `APIFY_CRAWL_TIMEOUT_MS` limits how long the app waits for the Apify Actor run.
+- `SCAN_MAX_PAGES` controls how many candidate URLs Apify can crawl. `1` is safest for Vercel request-time limits.
+- `APIFY_CRAWL_TIMEOUT_MS` limits how long the app waits for the Apify Actor run. The code caps this at 25000ms to avoid hosted function timeouts.
 - `APIFY_MAX_CRAWL_DEPTH` controls how far Apify can follow links from the submitted URL.
 - `APIFY_USE_SITEMAPS` controls whether Apify can load URLs from sitemaps.
 - `HTML_FETCH_TIMEOUT_MS` limits the lightweight HTML fetch used for schema, author, date, and reference detection.
 - `SITE_FILE_TIMEOUT_MS` limits robots.txt and sitemap.xml checks, which run in parallel with Apify.
 - `PAGE_MARKDOWN_LIMIT` caps cleaned content per page before the model call.
 - `PROMPT_CONTEXT_LIMIT` caps the total crawl context sent to OpenAI.
+- `OPENAI_TIMEOUT_MS` limits the structured analysis request. The code caps this at 25000ms and disables retries by default.
+- `ANALYZE_TIMEOUT_MS` returns a controlled timeout before the hosting platform kills the function.
 - `SCAN_PERSIST_TIMEOUT_MS` limits how long the API waits for Supabase storage before returning the report.
 
 ## MVP flow
