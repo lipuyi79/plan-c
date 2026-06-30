@@ -136,7 +136,7 @@ export async function analyzeSite(rawUrl: string, language: string, options: Ana
       pageCount: pageContexts.length,
       totalWordCount: pageContexts.reduce((total, page) => total + page.wordCount, 0)
     });
-    return buildHeuristicAiAnalysis(target, checks, answerStructures, error);
+    return buildHeuristicAiAnalysis(target, checks, answerStructures);
   });
   const analysis = mergeAnalysis(aiAnalysis, checks, answerStructures);
 
@@ -995,14 +995,12 @@ function logOpenAiAnalysisFallback(
 function buildHeuristicAiAnalysis(
   target: NormalizedTarget,
   checks: CrawlChecks,
-  answerStructures: AnswerStructureSignal[],
-  error: unknown
+  answerStructures: AnswerStructureSignal[]
 ): AiCitationAnalysis {
   const score = buildLocalScore(checks, answerStructures);
   const gaps = buildHeuristicCitationGaps(checks, answerStructures);
   const missingStructures = answerStructures.filter((signal) => !signal.present).map((signal) => signal.name);
   const readinessStatus = missingStructures.length >= 4 ? "fail" : missingStructures.length > 0 ? "warning" : "pass";
-  const modelFallbackNote = getModelFallbackNote(error);
 
   return {
     summary: {
@@ -1012,8 +1010,8 @@ function buildHeuristicAiAnalysis(
       verdict: verdictFromScore(score),
       oneSentenceDiagnosis:
         gaps[0]?.area === "Maintain citation readiness"
-          ? `${modelFallbackNote} Local checks did not find a major citation-readiness blocker.`
-          : `${modelFallbackNote} Local checks found ${gaps.length} citation-readiness gap${gaps.length === 1 ? "" : "s"} to fix first.`,
+          ? "Local checks did not find a major citation-readiness blocker."
+          : `Local checks found ${gaps.length} citation-readiness gap${gaps.length === 1 ? "" : "s"} to fix first.`,
       highestPriorityGap: gaps[0]?.area ?? "No major local gap detected"
     },
     aiAnswerReadiness: {
@@ -1122,14 +1120,6 @@ function verdictFromScore(score: number): AiCitationAnalysis["summary"]["verdict
   }
 
   return "high_risk";
-}
-
-function getModelFallbackNote(error: unknown) {
-  if (isTimeoutLikeError(error)) {
-    return "The AI review took longer than expected, so this report finished with fast local audit checks.";
-  }
-
-  return "This report finished with fast local audit checks while the AI review was temporarily unavailable.";
 }
 
 function parseRobotsGroups(content: string): RobotsGroup[] {
