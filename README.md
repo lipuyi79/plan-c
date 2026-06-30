@@ -58,7 +58,7 @@ APIFY_TOKEN=
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://sub2.de5.net/v1
 OPENAI_MODEL=gpt-5.5
-OPENAI_TIMEOUT_MS=16000
+OPENAI_TIMEOUT_MS=20000
 OPENAI_MAX_RETRIES=0
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
@@ -89,7 +89,7 @@ Use the raw API key value only. Do not include shell prefixes such as `export OP
 - `SITE_FILE_TIMEOUT_MS` limits robots.txt and sitemap.xml checks, which run in parallel with Apify.
 - `PAGE_MARKDOWN_LIMIT` caps cleaned content per page before the model call.
 - `PROMPT_CONTEXT_LIMIT` caps the total crawl context sent to OpenAI.
-- `OPENAI_TIMEOUT_MS` limits the structured analysis request. The code caps this at 20000ms, disables retries by default, and falls back to deterministic local scoring if model scoring is unavailable.
+- `OPENAI_TIMEOUT_MS` limits the structured analysis request. The code caps this at 20000ms, disables retries by default, and falls back to fast local audit checks when the AI review is unavailable.
 - `ANALYZE_TIMEOUT_MS` returns a controlled timeout before the hosting platform kills the function. The code caps this at 52000ms to leave response headroom under a 60 second Vercel limit.
 - `SCAN_PERSIST_TIMEOUT_MS` limits how long the API waits for Supabase storage before returning the report.
 
@@ -100,5 +100,5 @@ Use the raw API key value only. Do not include shell prefixes such as `export OP
 3. If `APIFY_TOKEN` is configured, Apify returns cleaned Markdown dataset items for up to `SCAN_MAX_PAGES` pages; otherwise the API uses direct HTML fetch fallback.
 4. Navigation, footer, cookie, social, newsletter, and duplicate Markdown lines are removed before scoring.
 5. The analyzer checks robots.txt AI crawler access, sitemap.xml, Title/H1, H2/H3 structure, word count, FAQ, Article/FAQ schema, author, last updated, references, and AI-answer-ready structures.
-6. OpenAI returns a structured AI Citation Score and prioritized AI Citation Gap recommendations based on those crawl facts. If the model call times out or fails, the API returns deterministic local scoring instead of waiting for the platform timeout.
+6. OpenAI returns a structured AI Citation Score and prioritized AI Citation Gap recommendations based on those crawl facts. If the model call times out or fails, the API returns fast local audit checks instead of waiting for the platform timeout.
 7. Supabase stores the scan result when credentials are configured, but slow storage no longer blocks the report indefinitely.

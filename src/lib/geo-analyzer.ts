@@ -29,7 +29,7 @@ const MAX_PAGE_MARKDOWN_LIMIT = 4500;
 const DEFAULT_PROMPT_CONTEXT_LIMIT = 12000;
 const MAX_PROMPT_CONTEXT_LIMIT = 14000;
 const DEFAULT_HTML_CAPTURE_LIMIT = 120000;
-const DEFAULT_OPENAI_TIMEOUT_MS = 16000;
+const DEFAULT_OPENAI_TIMEOUT_MS = 20000;
 const MAX_OPENAI_TIMEOUT_MS = 20000;
 const DEFAULT_OPENAI_MAX_RETRIES = 0;
 
@@ -131,6 +131,11 @@ export async function analyzeSite(rawUrl: string, language: string, options: Ana
     signal
   }).catch((error) => {
     assertNotAborted(signal);
+    logOpenAiAnalysisFallback(error, {
+      target,
+      pageCount: pageContexts.length,
+      totalWordCount: pageContexts.reduce((total, page) => total + page.wordCount, 0)
+    });
     return buildHeuristicAiAnalysis(target, checks, answerStructures, error);
   });
   const analysis = mergeAnalysis(aiAnalysis, checks, answerStructures);
@@ -960,6 +965,33 @@ function mergeAnalysis(
   };
 }
 
+function logOpenAiAnalysisFallback(
+  error: unknown,
+  context: {
+    target: NormalizedTarget;
+    pageCount: number;
+    totalWordCount: number;
+  }
+) {
+  console.warn("[analyze] OpenAI scoring fallback", {
+    target: {
+      inputUrl: context.target.inputUrl,
+      hostname: context.target.hostname
+    },
+    openai: {
+      model: process.env.OPENAI_MODEL || "gpt-5.5",
+      baseUrl: getLoggableBaseUrl(process.env.OPENAI_BASE_URL),
+      timeoutMs: getBoundedPositiveInt(process.env.OPENAI_TIMEOUT_MS, DEFAULT_OPENAI_TIMEOUT_MS, MAX_OPENAI_TIMEOUT_MS),
+      maxRetries: getNonNegativeInt(process.env.OPENAI_MAX_RETRIES, DEFAULT_OPENAI_MAX_RETRIES)
+    },
+    scan: {
+      pageCount: context.pageCount,
+      totalWordCount: context.totalWordCount
+    },
+    error: serializeErrorForLog(error)
+  });
+}
+
 function buildHeuristicAiAnalysis(
   target: NormalizedTarget,
   checks: CrawlChecks,
@@ -1093,11 +1125,11 @@ function verdictFromScore(score: number): AiCitationAnalysis["summary"]["verdict
 }
 
 function getModelFallbackNote(error: unknown) {
-  if (isAbortError(error)) {
-    return "Model scoring timed out, so this report uses deterministic crawl checks.";
+  if (isTimeoutLikeError(error)) {
+    return "The AI review took longer than expected, so this report finished with fast local audit checks.";
   }
 
-  return "Model scoring was unavailable, so this report uses deterministic crawl checks.";
+  return "This report finished with fast local audit checks while the AI review was temporarily unavailable.";
 }
 
 function parseRobotsGroups(content: string): RobotsGroup[] {
@@ -1529,7 +1561,74 @@ function assertNotAborted(signal?: AbortSignal) {
 }
 
 function isAbortError(error: unknown) {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+  return isTimeoutLikeError(error);
+}
+
+function isTimeoutLikeError(error: unknown): boolean {
+  if (!isRecord(error)) {
+    return false;
+  }
+
+  const name = typeof error.name === "string" ? error.name : "";
+  const message = typeof error.message === "string" ? error.message : "";
+  const code = typeof error.code === "string" ? error.code : "";
+  const type = typeof error.type === "string" ? error.type : "";
+  const status = typeof error.status === "number" ? error.status : null;
+  const haystack = [name, message, code, type].join(" ");
+
+  if (/abort|timeout|timed out|deadline|etimedout|econnaborted/i.test(haystack)) {
+    return true;
+  }
+
+  if (status === 408 || status === 504) {
+    return true;
+  }
+
+  return "cause" in error ? isTimeoutLikeError(error.cause) : false;
+}
+
+function serializeErrorForLog(error: unknown): Record<string, unknown> {
+  if (!isRecord(error)) {
+    return {
+      value: String(error)
+    };
+  }
+
+  const serialized: Record<string, unknown> = {};
+
+  ["name", "message", "status", "code", "type", "param"].forEach((key) => {
+    const value = error[key];
+
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      serialized[key] = value;
+    }
+  });
+
+  if (typeof error.stack === "string") {
+    serialized.stack = error.stack.split("\n").slice(0, 6).join("\n");
+  }
+
+  if ("cause" in error && error.cause) {
+    serialized.cause = serializeErrorForLog(error.cause);
+  }
+
+  if (Object.keys(serialized).length === 0) {
+    serialized.value = String(error);
+  }
+
+  return serialized;
+}
+
+function getLoggableBaseUrl(value: string | undefined) {
+  if (!value) {
+    return "https://api.openai.com/v1";
+  }
+
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value;
+  }
 }
 
 function truncate(value: string, maxLength: number) {
