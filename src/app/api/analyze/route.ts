@@ -7,8 +7,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const DEFAULT_PERSIST_TIMEOUT_MS = 1500;
-const DEFAULT_ANALYZE_TIMEOUT_MS = 55000;
+const DEFAULT_PERSIST_TIMEOUT_MS = 1000;
+const MAX_PERSIST_TIMEOUT_MS = 1500;
+const DEFAULT_ANALYZE_TIMEOUT_MS = 50000;
+const MAX_ANALYZE_TIMEOUT_MS = 52000;
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
@@ -17,9 +19,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const input = AnalyzeRequestSchema.parse(body);
     const result = await withTimeout(
-      analyzeSite(input.url, input.language),
-      getPositiveInt(process.env.ANALYZE_TIMEOUT_MS, DEFAULT_ANALYZE_TIMEOUT_MS),
-      "Analysis timed out before the deployment function limit. Try a smaller page or increase ANALYZE_TIMEOUT_MS on a plan that supports longer functions."
+      (signal) => analyzeSite(input.url, input.language, { signal }),
+      getBoundedPositiveInt(process.env.ANALYZE_TIMEOUT_MS, DEFAULT_ANALYZE_TIMEOUT_MS, MAX_ANALYZE_TIMEOUT_MS),
+      "Analysis timed out before the 60 second deployment function limit. Try a smaller page or lower crawl/model timeouts."
     );
     const createdAt = new Date().toISOString();
     const scanRecord = await persistScanWithTimeout({
@@ -59,14 +61,18 @@ export async function POST(request: Request) {
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   try {
     return await Promise.race([
-      promise,
+      operation(controller.signal),
       new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          reject(new Error(message));
+        }, timeoutMs);
       })
     ]);
   } finally {
@@ -92,7 +98,7 @@ type PersistScanResult = {
 };
 
 async function persistScanWithTimeout(input: PersistScanInput): Promise<PersistScanResult> {
-  const timeoutMs = getPositiveInt(process.env.SCAN_PERSIST_TIMEOUT_MS, DEFAULT_PERSIST_TIMEOUT_MS);
+  const timeoutMs = getBoundedPositiveInt(process.env.SCAN_PERSIST_TIMEOUT_MS, DEFAULT_PERSIST_TIMEOUT_MS, MAX_PERSIST_TIMEOUT_MS);
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   try {
@@ -167,4 +173,8 @@ async function persistScan({
 function getPositiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function getBoundedPositiveInt(value: string | undefined, fallback: number, max: number) {
+  return Math.min(getPositiveInt(value, fallback), max);
 }

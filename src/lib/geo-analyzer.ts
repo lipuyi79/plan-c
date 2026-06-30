@@ -14,17 +14,23 @@ import {
 const APIFY_BASE_URL = "https://api.apify.com/v2";
 const APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR = "apify~website-content-crawler";
 const DEFAULT_SCAN_MAX_PAGES = 1;
-const DEFAULT_APIFY_CRAWL_TIMEOUT_MS = 20000;
-const MAX_APIFY_CRAWL_TIMEOUT_MS = 25000;
+const MAX_SCAN_MAX_PAGES = 1;
+const DEFAULT_APIFY_CRAWL_TIMEOUT_MS = 12000;
+const MAX_APIFY_CRAWL_TIMEOUT_MS = 18000;
 const DEFAULT_APIFY_MAX_CRAWL_DEPTH = 1;
+const MAX_APIFY_MAX_CRAWL_DEPTH = 1;
 const DEFAULT_APIFY_USE_SITEMAPS = false;
-const DEFAULT_HTML_FETCH_TIMEOUT_MS = 5000;
-const DEFAULT_SITE_FILE_TIMEOUT_MS = 1500;
-const DEFAULT_PAGE_MARKDOWN_LIMIT = 4500;
-const DEFAULT_PROMPT_CONTEXT_LIMIT = 18000;
+const DEFAULT_HTML_FETCH_TIMEOUT_MS = 3000;
+const MAX_HTML_FETCH_TIMEOUT_MS = 4000;
+const DEFAULT_SITE_FILE_TIMEOUT_MS = 1000;
+const MAX_SITE_FILE_TIMEOUT_MS = 1500;
+const DEFAULT_PAGE_MARKDOWN_LIMIT = 3500;
+const MAX_PAGE_MARKDOWN_LIMIT = 4500;
+const DEFAULT_PROMPT_CONTEXT_LIMIT = 12000;
+const MAX_PROMPT_CONTEXT_LIMIT = 14000;
 const DEFAULT_HTML_CAPTURE_LIMIT = 120000;
-const DEFAULT_OPENAI_TIMEOUT_MS = 22000;
-const MAX_OPENAI_TIMEOUT_MS = 25000;
+const DEFAULT_OPENAI_TIMEOUT_MS = 16000;
+const MAX_OPENAI_TIMEOUT_MS = 20000;
 const DEFAULT_OPENAI_MAX_RETRIES = 0;
 
 const AI_CRAWLERS = ["GPTBot", "ClaudeBot", "Google-Extended", "PerplexityBot", "CCBot", "anthropic-ai", "Bytespider"];
@@ -86,19 +92,27 @@ export type AnalyzeSiteResult = {
   analysis: GeoAnalysis;
 };
 
-export async function analyzeSite(rawUrl: string, language: string): Promise<AnalyzeSiteResult> {
-  const target = normalizeTarget(rawUrl);
-  await assertPublicTarget(target);
+type AnalyzeSiteOptions = {
+  signal?: AbortSignal;
+};
 
-  const apifyToken = getSecretEnv("APIFY_TOKEN", "The website cannot be scanned.");
+export async function analyzeSite(rawUrl: string, language: string, options: AnalyzeSiteOptions = {}): Promise<AnalyzeSiteResult> {
+  const { signal } = options;
+  const target = normalizeTarget(rawUrl);
+  assertNotAborted(signal);
+  await assertPublicTarget(target);
+  assertNotAborted(signal);
+
+  const apifyToken = getOptionalEnv("APIFY_TOKEN");
   const openaiApiKey = getSecretEnv("OPENAI_API_KEY", "The AI citation analysis cannot be generated.");
 
-  const maxPages = getPositiveInt(process.env.SCAN_MAX_PAGES, DEFAULT_SCAN_MAX_PAGES);
-  const siteFilesPromise = checkSiteFiles(target.siteUrl);
+  const maxPages = getBoundedPositiveInt(process.env.SCAN_MAX_PAGES, DEFAULT_SCAN_MAX_PAGES, MAX_SCAN_MAX_PAGES);
+  const siteFilesPromise = checkSiteFiles(target.siteUrl, signal);
   const [pageContexts, siteFiles] = await Promise.all([
-    collectPageContexts(target, apifyToken, maxPages),
+    collectPageContexts(target, apifyToken, maxPages, signal),
     siteFilesPromise
   ]);
+  assertNotAborted(signal);
 
   if (pageContexts.length === 0) {
     throw new Error("Apify did not return analyzable page content.");
@@ -113,7 +127,11 @@ export async function analyzeSite(rawUrl: string, language: string): Promise<Ana
     checks,
     answerStructures,
     language,
-    openaiApiKey
+    openaiApiKey,
+    signal
+  }).catch((error) => {
+    assertNotAborted(signal);
+    return buildHeuristicAiAnalysis(target, checks, answerStructures, error);
   });
   const analysis = mergeAnalysis(aiAnalysis, checks, answerStructures);
 
@@ -199,50 +217,54 @@ function isPrivateIp(ip: string) {
   );
 }
 
-async function collectPageContexts(target: NormalizedTarget, apiToken: string, maxPages: number) {
+async function collectPageContexts(target: NormalizedTarget, apiToken: string | undefined, maxPages: number, signal?: AbortSignal) {
   const timeoutMs = getBoundedPositiveInt(
     process.env.APIFY_CRAWL_TIMEOUT_MS,
     DEFAULT_APIFY_CRAWL_TIMEOUT_MS,
     MAX_APIFY_CRAWL_TIMEOUT_MS
   );
 
-  try {
-    const items = await apifyRunSync<ApifyDatasetItem[]>(
-      APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR,
-      {
-        startUrls: [{ url: target.inputUrl }],
-        maxCrawlPages: maxPages,
-        maxResults: maxPages,
-        maxCrawlDepth: getPositiveInt(process.env.APIFY_MAX_CRAWL_DEPTH, DEFAULT_APIFY_MAX_CRAWL_DEPTH),
-        saveMarkdown: true,
-        saveHtml: false,
-        useSitemaps: getBooleanEnv(process.env.APIFY_USE_SITEMAPS, DEFAULT_APIFY_USE_SITEMAPS)
-      },
-      apiToken,
-      timeoutMs
-    );
+  if (apiToken) {
+    try {
+      const items = await apifyRunSync<ApifyDatasetItem[]>(
+        APIFY_WEBSITE_CONTENT_CRAWLER_ACTOR,
+        {
+          startUrls: [{ url: target.inputUrl }],
+          maxCrawlPages: maxPages,
+          maxResults: maxPages,
+          maxCrawlDepth: getBoundedPositiveInt(process.env.APIFY_MAX_CRAWL_DEPTH, DEFAULT_APIFY_MAX_CRAWL_DEPTH, MAX_APIFY_MAX_CRAWL_DEPTH),
+          saveMarkdown: true,
+          saveHtml: false,
+          useSitemaps: getBooleanEnv(process.env.APIFY_USE_SITEMAPS, DEFAULT_APIFY_USE_SITEMAPS)
+        },
+        apiToken,
+        timeoutMs,
+        signal
+      );
 
-    if (!Array.isArray(items)) {
-      throw new Error("Apify crawler returned an unexpected response.");
+      if (!Array.isArray(items)) {
+        throw new Error("Apify crawler returned an unexpected response.");
+      }
+
+      const pages = await normalizeApifyItems(items, target, maxPages, signal);
+
+      if (pages.length > 0) {
+        return pages;
+      }
+    } catch (error) {
+      assertNotAborted(signal);
+      // Fallback below keeps hosted scans from failing when the crawler is slow.
     }
-
-    const pages = await normalizeApifyItems(items, target, maxPages);
-
-    if (pages.length > 0) {
-      return pages;
-    }
-  } catch {
-    // Fallback below keeps hosted scans from failing when the crawler is slow.
   }
 
-  const fallbackPage = await fetchFallbackPageContext(target);
+  const fallbackPage = await fetchFallbackPageContext(target, signal);
   return fallbackPage ? [fallbackPage] : [];
 }
 
-async function normalizeApifyItems(items: ApifyDatasetItem[], target: NormalizedTarget, maxPages: number) {
+async function normalizeApifyItems(items: ApifyDatasetItem[], target: NormalizedTarget, maxPages: number, signal?: AbortSignal) {
   const origin = new URL(target.siteUrl).origin;
   const inputKey = toUrlKey(target.inputUrl, origin);
-  const pages = (await Promise.all(items.map((item) => apifyItemToPageContext(item, target)))).filter(
+  const pages = (await Promise.all(items.map((item) => apifyItemToPageContext(item, target, signal)))).filter(
     (page) => page.rawMarkdown.trim().length > 0 || page.html.trim().length > 0
   );
 
@@ -301,7 +323,7 @@ function scoreUrl(url: string, origin: string, inputKey: string) {
   return (matchedIndex === -1 ? 50 : matchedIndex + 2) + depth * 3;
 }
 
-async function apifyItemToPageContext(item: ApifyDatasetItem, target: NormalizedTarget): Promise<PageContext> {
+async function apifyItemToPageContext(item: ApifyDatasetItem, target: NormalizedTarget, signal?: AbortSignal): Promise<PageContext> {
   const metadata = isRecord(item.metadata) ? item.metadata : {};
   const request = isRecord(item.request) ? item.request : {};
   const crawl = isRecord(item.crawl) ? item.crawl : {};
@@ -322,7 +344,7 @@ async function apifyItemToPageContext(item: ApifyDatasetItem, target: Normalized
   const headings = extractMarkdownHeadings(rawMarkdown);
   const html =
     firstString(item.html) ??
-    (await fetchPageHtml(url, getPositiveInt(process.env.HTML_FETCH_TIMEOUT_MS, DEFAULT_HTML_FETCH_TIMEOUT_MS)).catch(() => ""));
+    (await fetchPageHtml(url, getBoundedPositiveInt(process.env.HTML_FETCH_TIMEOUT_MS, DEFAULT_HTML_FETCH_TIMEOUT_MS, MAX_HTML_FETCH_TIMEOUT_MS), signal).catch(() => ""));
 
   return {
     url,
@@ -332,15 +354,19 @@ async function apifyItemToPageContext(item: ApifyDatasetItem, target: Normalized
     h1s: headings.filter((heading) => heading.level === 1).map((heading) => heading.text).slice(0, 5),
     h2Count: headings.filter((heading) => heading.level === 2).length,
     h3Count: headings.filter((heading) => heading.level === 3).length,
-    markdown: selectImportantMarkdown(rawMarkdown, getPositiveInt(process.env.PAGE_MARKDOWN_LIMIT, DEFAULT_PAGE_MARKDOWN_LIMIT)),
+    markdown: selectImportantMarkdown(rawMarkdown, getBoundedPositiveInt(process.env.PAGE_MARKDOWN_LIMIT, DEFAULT_PAGE_MARKDOWN_LIMIT, MAX_PAGE_MARKDOWN_LIMIT)),
     rawMarkdown,
     html,
     links: normalizeLinks([...extractLinksFromUnknown(item.links), ...extractLinksFromUnknown(item.outlinks)])
   };
 }
 
-async function fetchFallbackPageContext(target: NormalizedTarget): Promise<PageContext | null> {
-  const html = await fetchPageHtml(target.inputUrl, getPositiveInt(process.env.HTML_FETCH_TIMEOUT_MS, DEFAULT_HTML_FETCH_TIMEOUT_MS));
+async function fetchFallbackPageContext(target: NormalizedTarget, signal?: AbortSignal): Promise<PageContext | null> {
+  const html = await fetchPageHtml(
+    target.inputUrl,
+    getBoundedPositiveInt(process.env.HTML_FETCH_TIMEOUT_MS, DEFAULT_HTML_FETCH_TIMEOUT_MS, MAX_HTML_FETCH_TIMEOUT_MS),
+    signal
+  );
 
   if (!html.trim()) {
     return null;
@@ -357,7 +383,7 @@ async function fetchFallbackPageContext(target: NormalizedTarget): Promise<PageC
     h1s: headings.filter((heading) => heading.level === 1).map((heading) => heading.text).slice(0, 5),
     h2Count: headings.filter((heading) => heading.level === 2).length,
     h3Count: headings.filter((heading) => heading.level === 3).length,
-    markdown: selectImportantMarkdown(rawMarkdown, getPositiveInt(process.env.PAGE_MARKDOWN_LIMIT, DEFAULT_PAGE_MARKDOWN_LIMIT)),
+    markdown: selectImportantMarkdown(rawMarkdown, getBoundedPositiveInt(process.env.PAGE_MARKDOWN_LIMIT, DEFAULT_PAGE_MARKDOWN_LIMIT, MAX_PAGE_MARKDOWN_LIMIT)),
     rawMarkdown,
     html,
     links: normalizeLinks(extractUrls(html))
@@ -393,9 +419,10 @@ async function apifyRunSync<T>(
   actorId: string,
   body: unknown,
   apiToken: string,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<T> {
-  const requestSignal = createRequestSignal(timeoutMs);
+  const requestSignal = createRequestSignal(timeoutMs, signal);
   const url = new URL(`${APIFY_BASE_URL}/acts/${actorId}/run-sync-get-dataset-items`);
 
   url.searchParams.set("format", "json");
@@ -432,16 +459,18 @@ async function apifyRunSync<T>(
   }
 }
 
-async function checkSiteFiles(siteUrl: string): Promise<SiteFileCheck[]> {
+async function checkSiteFiles(siteUrl: string, signal?: AbortSignal): Promise<SiteFileCheck[]> {
   const paths = ["/robots.txt", "/sitemap.xml"];
-  const timeoutMs = getPositiveInt(process.env.SITE_FILE_TIMEOUT_MS, DEFAULT_SITE_FILE_TIMEOUT_MS);
+  const timeoutMs = getBoundedPositiveInt(process.env.SITE_FILE_TIMEOUT_MS, DEFAULT_SITE_FILE_TIMEOUT_MS, MAX_SITE_FILE_TIMEOUT_MS);
 
   return Promise.all(
     paths.map(async (path) => {
+      const requestSignal = createRequestSignal(timeoutMs, signal);
+
       try {
         const response = await fetch(`${siteUrl}${path}`, {
           method: "GET",
-          signal: AbortSignal.timeout(timeoutMs)
+          signal: requestSignal.signal
         });
         const text = response.ok ? truncate(await response.text(), DEFAULT_HTML_CAPTURE_LIMIT) : "";
 
@@ -452,7 +481,11 @@ async function checkSiteFiles(siteUrl: string): Promise<SiteFileCheck[]> {
           snippet: truncate(text, path === "/robots.txt" ? 4000 : 1200),
           content: text
         } satisfies SiteFileCheck;
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) {
+          throw error;
+        }
+
         return {
           path,
           status: "unknown",
@@ -460,6 +493,8 @@ async function checkSiteFiles(siteUrl: string): Promise<SiteFileCheck[]> {
           snippet: "",
           content: ""
         } satisfies SiteFileCheck;
+      } finally {
+        requestSignal.cleanup();
       }
     })
   );
@@ -775,7 +810,8 @@ async function runOpenAiAnalysis({
   checks,
   answerStructures,
   language,
-  openaiApiKey
+  openaiApiKey,
+  signal
 }: {
   target: NormalizedTarget;
   pages: PageContext[];
@@ -784,7 +820,9 @@ async function runOpenAiAnalysis({
   answerStructures: AnswerStructureSignal[];
   language: string;
   openaiApiKey: string;
+  signal?: AbortSignal;
 }): Promise<AiCitationAnalysis> {
+  assertNotAborted(signal);
   const timeout = getBoundedPositiveInt(process.env.OPENAI_TIMEOUT_MS, DEFAULT_OPENAI_TIMEOUT_MS, MAX_OPENAI_TIMEOUT_MS);
   const openai = new OpenAI({
     apiKey: openaiApiKey,
@@ -835,7 +873,8 @@ async function runOpenAiAnalysis({
       }
     },
     {
-      timeout
+      timeout,
+      signal
     }
   );
 
@@ -898,7 +937,7 @@ function buildPromptContext(
       "Scanned pages:",
       pageContext
     ].join("\n"),
-    getPositiveInt(process.env.PROMPT_CONTEXT_LIMIT, DEFAULT_PROMPT_CONTEXT_LIMIT)
+    getBoundedPositiveInt(process.env.PROMPT_CONTEXT_LIMIT, DEFAULT_PROMPT_CONTEXT_LIMIT, MAX_PROMPT_CONTEXT_LIMIT)
   );
 }
 
@@ -919,6 +958,146 @@ function mergeAnalysis(
     },
     aiCitationGaps: aiAnalysis.aiCitationGaps.slice(0, 8)
   };
+}
+
+function buildHeuristicAiAnalysis(
+  target: NormalizedTarget,
+  checks: CrawlChecks,
+  answerStructures: AnswerStructureSignal[],
+  error: unknown
+): AiCitationAnalysis {
+  const score = buildLocalScore(checks, answerStructures);
+  const gaps = buildHeuristicCitationGaps(checks, answerStructures);
+  const missingStructures = answerStructures.filter((signal) => !signal.present).map((signal) => signal.name);
+  const readinessStatus = missingStructures.length >= 4 ? "fail" : missingStructures.length > 0 ? "warning" : "pass";
+  const modelFallbackNote = getModelFallbackNote(error);
+
+  return {
+    summary: {
+      domain: target.hostname,
+      auditedUrl: target.inputUrl,
+      aiCitationScore: score,
+      verdict: verdictFromScore(score),
+      oneSentenceDiagnosis:
+        gaps[0]?.area === "Maintain citation readiness"
+          ? `${modelFallbackNote} Local checks did not find a major citation-readiness blocker.`
+          : `${modelFallbackNote} Local checks found ${gaps.length} citation-readiness gap${gaps.length === 1 ? "" : "s"} to fix first.`,
+      highestPriorityGap: gaps[0]?.area ?? "No major local gap detected"
+    },
+    aiAnswerReadiness: {
+      status: readinessStatus,
+      summary:
+        missingStructures.length > 0
+          ? `${missingStructures.length} answer-ready content structure${missingStructures.length === 1 ? "" : "s"} were not detected.`
+          : "Core answer-ready structures were detected by the local scan.",
+      missingStructures,
+      suggestedAnswerShape:
+        "Open with a concise answer summary, then use H2 sections for facts, proof, process, FAQs, and sources."
+    },
+    aiCitationGaps: gaps
+  };
+}
+
+function buildHeuristicCitationGaps(
+  checks: CrawlChecks,
+  answerStructures: AnswerStructureSignal[]
+): AiCitationAnalysis["aiCitationGaps"] {
+  const gaps: AiCitationAnalysis["aiCitationGaps"] = [];
+
+  pushCheckGap(gaps, checks.aiCrawlerAccess, "AI crawler access", "Allows answer engines to crawl and verify the page.", 0);
+  pushCheckGap(gaps, checks.sitemap, "Sitemap discoverability", "Helps crawlers find canonical and important URLs faster.", 1);
+  pushCheckGap(gaps, checks.titleAndH1, "Title and H1 clarity", "Improves entity recognition and page-topic confidence.", 2);
+  pushCheckGap(gaps, checks.headingStructure, "H2/H3 answer structure", "Makes the page easier to extract into direct answers.", 3);
+  pushCheckGap(gaps, checks.contentWordCount, "Citeable content depth", "Gives AI systems enough original context to cite.", 4);
+  pushCheckGap(gaps, checks.schemaPresence, "Article or FAQ schema", "Adds machine-readable facts that support citation confidence.", 5);
+  pushCheckGap(gaps, checks.faqPresence, "FAQ coverage", "Adds direct question-answer material for AI answer formats.", 6);
+  pushCheckGap(gaps, checks.authorPresence, "Author trust signal", "Supports source credibility and accountability.", 7);
+  pushCheckGap(gaps, checks.lastUpdatedPresence, "Freshness signal", "Shows whether the content is current enough to cite.", 8);
+  pushCheckGap(gaps, checks.referencesPresence, "References and sources", "Connects important claims to verifiable evidence.", 9);
+
+  const missingStructures = answerStructures.filter((signal) => !signal.present).map((signal) => signal.name);
+
+  if (missingStructures.length > 0) {
+    gaps.push({
+      priority: missingStructures.length >= 4 ? "P1" : "P2",
+      area: "Answer-ready content formats",
+      evidence: `Missing structures: ${missingStructures.join(", ")}.`,
+      recommendation: "Add concise summary, steps, comparison, FAQ, and proof sections where they match the page intent.",
+      expectedImpact: "Improves the chance that AI systems can turn the page into a complete cited answer."
+    });
+  }
+
+  if (gaps.length === 0) {
+    gaps.push({
+      priority: "P3",
+      area: "Maintain citation readiness",
+      evidence: "The local crawl checks did not find a high-risk gap.",
+      recommendation: "Keep crawler access, schema, headings, dates, and references current as the page changes.",
+      expectedImpact: "Preserves current AI citation readiness."
+    });
+  }
+
+  return gaps.slice(0, 8);
+}
+
+function pushCheckGap(
+  gaps: AiCitationAnalysis["aiCitationGaps"],
+  check: CrawlChecks[keyof CrawlChecks],
+  area: string,
+  expectedImpact: string,
+  order: number
+) {
+  if (check.status === "pass") {
+    return;
+  }
+
+  gaps.push({
+    priority: priorityForStatus(check.status, order),
+    area,
+    evidence: check.evidence[0] ?? check.summary,
+    recommendation: check.recommendation,
+    expectedImpact
+  });
+}
+
+function priorityForStatus(status: CrawlChecks[keyof CrawlChecks]["status"], order: number): AiCitationAnalysis["aiCitationGaps"][number]["priority"] {
+  if (status === "fail" && order <= 1) {
+    return "P0";
+  }
+
+  if (status === "fail") {
+    return "P1";
+  }
+
+  if (status === "warning" && order <= 4) {
+    return "P2";
+  }
+
+  return "P3";
+}
+
+function verdictFromScore(score: number): AiCitationAnalysis["summary"]["verdict"] {
+  if (score >= 85) {
+    return "excellent";
+  }
+
+  if (score >= 70) {
+    return "good";
+  }
+
+  if (score >= 40) {
+    return "needs_work";
+  }
+
+  return "high_risk";
+}
+
+function getModelFallbackNote(error: unknown) {
+  if (isAbortError(error)) {
+    return "Model scoring timed out, so this report uses deterministic crawl checks.";
+  }
+
+  return "Model scoring was unavailable, so this report uses deterministic crawl checks.";
 }
 
 function parseRobotsGroups(content: string): RobotsGroup[] {
@@ -1341,6 +1520,12 @@ function createRequestSignal(timeoutMs?: number, externalSignal?: AbortSignal) {
       externalSignal?.removeEventListener("abort", abortFromExternal);
     }
   };
+}
+
+function assertNotAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error("Analysis was cancelled before completion.");
+  }
 }
 
 function isAbortError(error: unknown) {
